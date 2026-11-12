@@ -1,16 +1,19 @@
 import { selectProvider } from './data';
 import type { DataBundle } from './data/types';
-import { Sim, WARP } from './core/sim';
+import { Sim } from './core/sim';
 import { World } from './render/scene';
-import { Hud, fmtDur, fmtMET } from './ui/hud';
-import { TacticalMap, LayerId } from './ui/map';
+import { Hud, fmtDur, fmtMET, FEATURE_LABEL, km, esc } from './ui/hud';
+import { TacticalMap, LayerId, LAYER_INFO } from './ui/map';
 import { drawChart } from './ui/chart';
 import { Audio } from './ui/audio';
-import { Voice, parseCommand } from './ui/voice';
+import { Voice, parseCommand, Command, FeatureId } from './ui/voice';
+import { GazeTracker } from './ui/gaze';
+import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const FEATURES: FeatureId[] = ['mission', 'o2', 'h2o', 'power', 'dose', 'fatigue', 'map', 'route', 'drone', 'sample', 'layers'];
 
 async function boot() {
   const provider = selectProvider();
@@ -18,7 +21,7 @@ async function boot() {
   try {
     data = await provider.load();
   } catch (e) {
-    $('loading').innerHTML = `<div class="loader mono">DATA LOAD FAILED<br/><span class="muted">${esc(String(e))}</span></div>`;
+    $('loading').innerHTML = `<div class="loader">DATA LOAD FAILED<br/><span class="dim">${esc(String(e))}</span></div>`;
     return;
   }
   const sim = new Sim(data);
@@ -26,217 +29,525 @@ async function boot() {
   const hud = new Hud(data, sim, world);
   const audio = new Audio();
   const voice = new Voice();
-  (window as any).__eva = { sim, world, hud };
+  const gaze = new GazeTracker();
+  const targets = new Targeting();
+  (window as any).__tevan = { sim, world, hud, voice, gaze, targets };
 
-  // ---------------------------------------------------------------- controls (briefing footer + H help share one list)
-  const CONTROLS: [string[], string][] = [
-    [['W', 'A', 'S', 'D'], 'walk / strafe'],
-    [['Shift'], 'sprint (hold)'],
-    [['Drag', '←', '→'], 'look / turn'],
-    [['1', '2', '3'], 'choose traverse or incident option'],
-    [['R'], 'accept / request reroute'],
-    [['X'], 'dismiss advisory'],
-    [['F'], 'collect sample'],
-    [['G'], 'cycle pace'],
-    [['Q'], 'launch / recall drone scout'],
-    [['V'], 'read vitals aloud'],
-    [['M'], 'map + route planner'],
-    [['Tab'], 'full navigator / minimal visor'],
-    [['Space'], 'push to talk'],
-    [['Enter'], 'type a command'],
-    [['[', ']'], 'time warp'],
-    [['K'], 'mute audio'],
-    [['H'], 'this help'],
-  ];
-  const kbd = (k: string) => `<kbd>${esc(k)}</kbd>`;
-  $('help-keys').innerHTML = CONTROLS.map(([ks, v]) => `<div><span>${ks.map(kbd).join('')}</span><span>${v}</span></div>`).join('');
-  $('brief-controls').innerHTML =
-    '<span class="lbl">CONTROLS</span>' +
-    CONTROLS.filter(([ks]) => ['W', 'Drag', '1', 'R', 'F', 'Q', 'M', 'Tab', 'Space', 'H'].includes(ks[0]))
-      .map(([ks, v]) => `<span>${ks.map(kbd).join('')} ${v}</span>`)
-      .join('');
-
-  // ---------------------------------------------------------------- briefing
+  // ---------------------------------------------------------------- pre-egress screen
   const m = data.mission;
   $('brief-title').textContent = m.title;
-  $('brief-subtitle').textContent = `${m.subtitle} · Operational avionics flight plan`;
-  $('brief-datasource').innerHTML = `DATA SOURCE: <b>${esc(data.label)}</b>`;
+  $('brief-subtitle').textContent = m.subtitle;
   const habNode = sim.world.nodes.get(m.startNodeId)!;
-  const objHtml = m.objectives
-    .map((o, i) => {
+  $('brief-objectives').innerHTML = m.objectives
+    .map((o) => {
       const node = sim.world.nodes.get(o.nodeId)!;
-      const poi = data.pois.find((q) => q.name === node.name);
-      const d = Math.hypot(node.e - habNode.e, node.n - habNode.n) / 1000;
-      const isRet = o.kind === 'return';
-      return `<div class="obj"><span class="ms">${isRet ? 'schedule' : 'check_box'}</span><div><b>${i + 1}. ${esc(o.label)}</b><p>${esc(isRet ? 'Cycle the airlock before primary O2 or suit battery drops to the 20% flight safety reserve.' : poi?.note ?? '')}</p></div>
-        <span class="tag ${isRet ? 'green' : i ? 'amber' : ''}">${isRet ? 'RTB HARD LIMIT' : `${o.nodeId} · ${d.toFixed(1)} km`}</span></div>`;
+      const d = Math.hypot(node.e - habNode.e, node.n - habNode.n);
+      return `<li><span>${esc(o.label)}</span><em>${o.kind === 'return' ? 'before 20% reserve' : km(d)}</em></li>`;
     })
     .join('');
-  $('brief-objectives').innerHTML = `<h3><span><i class="sqd"></i>MISSION OBJECTIVES</span><span class="muted">PRIORITY ORDER</span></h3>${objHtml}
-    <div class="obj-foot"><span>ABORT CRITERIA: O2 &lt; 20% · DOSE &gt; BUDGET · FATIGUE 100</span><b>RESERVE LINE ${RESERVE_FRAC * 100}%</b></div>`;
   const c = m.consumables;
-  const bcons = (name: string, val: string, lo: string, res: string, hi: string) =>
-    `<div class="bcons"><div class="row"><span><i class="dot ok"></i>${name}</span><span><b>${val}</b> <span class="ok-g">100%</span></span></div><b class="cbar"><i></i><em class="reserve" style="left:${RESERVE_FRAC * 100}%"></em></b><div class="scale"><span>${lo}</span><span class="r">▲ 20% RESERVE (${res})</span><span>${hi}</span></div></div>`;
-  $('brief-consumables').innerHTML = `<h3><span><i class="sqd" style="background:var(--ok)"></i>CONSUMABLES AT EGRESS</span><span class="ok-g" style="font-size:10px">ALL SYSTEMS NOMINAL</span></h3>
-    ${bcons('PRIMARY OXYGEN (O2)', `${c.o2g} g`, '0 g', `${(c.o2g * RESERVE_FRAC).toFixed(0)} g`, `${c.o2g} g`)}
-    ${bcons('SUBLIMATOR COOLING WATER (H2O)', `${(c.waterg / 1000).toFixed(1)} kg`, '0 kg', `${((c.waterg * RESERVE_FRAC) / 1000).toFixed(2)} kg`, `${(c.waterg / 1000).toFixed(1)} kg`)}
-    ${bcons('PLSS BATTERY', `${c.battWh} Wh`, '0 Wh', `${(c.battWh * RESERVE_FRAC).toFixed(0)} Wh`, `${c.battWh} Wh`)}
-    ${bcons('RADIATION DOSE BUDGET (GCR + SPE)', `${c.doseBudgetmSv} mSv`, '0 mSv', `${(c.doseBudgetmSv * RESERVE_FRAC).toFixed(0)} mSv`, `${c.doseBudgetmSv} mSv`)}`;
+  $('brief-consumables').innerHTML = [
+    ['O₂', `${c.o2g} g`],
+    ['H₂O', `${(c.waterg / 1000).toFixed(1)} kg`],
+    ['Battery', `${c.battWh} Wh`],
+    ['Dose budget', `${c.doseBudgetmSv} mSv`],
+  ]
+    .map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`)
+    .join('');
   const cond = data.conditions;
   const lm = `${String(Math.floor(m.startLmstH)).padStart(2, '0')}:${String(Math.round((m.startLmstH % 1) * 60)).padStart(2, '0')}`;
-  const ct = (k: string, v: string, u: string, frac: number, sub: string, col = 'var(--accent)') =>
-    `<div class="cond"><span class="lbl">${k}</span><b>${v}<small>${u}</small></b><b class="cbar"><i style="width:${frac * 100}%;background:${col}"></i></b><span class="sub">${sub}</span></div>`;
-  $('brief-conditions').innerHTML = `<h3><span><i class="sqd"></i>SPACE WEATHER &amp; CONDITIONS</span><span class="muted">ORBITAL METEOROLOGY SYNCED</span></h3><div class="cond-tiles">
-    ${ct('SURFACE TEMP', String(cond.surfaceTempC), '°C', 0.35, 'SUIT HEATERS NOMINAL')}
-    ${ct('DUST OPACITY (τ)', String(cond.dustTau), 'tau', Math.min(1, cond.dustTau / 3), 'CLEAR · VIS &gt; 10 km', 'var(--ok)')}
-    ${ct('GCR DOSE RATE', String(cond.gcrDoseRateuSvH), 'µSv/h', 0.2, 'SPE WATCH ISSUED', 'var(--caution)')}
-    ${ct('MISSION SOL', String(m.sol), 'MTC', 0.6, 'JEZERO CRATER')}
-    ${ct('LOCAL SOLAR TIME', lm, 'LMST', m.startLmstH / 24, 'EGRESS WINDOW OPEN')}</div>`;
+  $('brief-conditions').textContent = `Sol ${m.sol} · ${lm} LMST · ${cond.surfaceTempC} °C · dust τ ${cond.dustTau} · GCR ${cond.gcrDoseRateuSvH} µSv/h · SPE watch`;
   const briefMap = new TacticalMap(data, sim);
   briefMap.layers.fog = false;
   briefMap.layers.radiation = true;
+  const chk = (id: string, cls: string, text: string) => {
+    const el = $(id);
+    el.className = cls;
+    el.lastChild!.textContent = text;
+  };
+  chk('chk-mic', voice.supported ? '' : 'bad', voice.supported ? 'Voice · microphone' : 'Voice needs Chrome or Edge (type with Enter)');
+  chk('chk-cam', gaze.supported ? '' : 'bad', gaze.supported ? 'Gaze · camera' : 'No camera API: pointer stands in for gaze');
   $('loading').classList.add('hidden');
   $('briefing').classList.remove('hidden');
   requestAnimationFrame(() => briefMap.draw($('brief-map') as HTMLCanvasElement, { t: 0, large: true }));
 
-  const begin = async (training: boolean) => {
-    $('briefing').classList.add('hidden');
-    $('hud').classList.remove('hidden');
+  // ---------------------------------------------------------------- voice capsule (secondary island)
+  const capsule = $('voice-capsule');
+  const transcript = $('voice-transcript');
+  let capsuleTimer = 0;
+  const setCapsule = (cls: string, text = '', ttl = 0) => {
+    capsule.className = cls;
+    transcript.textContent = text;
+    clearTimeout(capsuleTimer);
+    if (ttl) capsuleTimer = window.setTimeout(() => setCapsule(voiceIdleClass()), ttl);
+  };
+  const voiceIdleClass = () => (voice.state === 'denied' ? 'err' : voice.state === 'asleep' ? 'asleep' : voice.state === 'listening' || voice.state === 'hearing' ? 'listening' : 'idle');
+  voice.onState = (s) => {
+    if (s === 'denied') setCapsule('err', 'Microphone blocked');
+    else if (s !== 'hearing' && !capsule.classList.contains('ok') && !capsule.classList.contains('miss')) setCapsule(voiceIdleClass());
+    chk('chk-mic', s === 'denied' ? 'bad' : s === 'listening' ? 'ok' : '', s === 'denied' ? 'Microphone blocked' : s === 'listening' ? 'Voice · listening' : 'Voice · microphone');
+  };
+  voice.onInterim = (t) => {
+    if (voice.asleep) return;
+    setCapsule('hearing', t);
+  };
+  voice.onFinal = (t) => {
+    const cmd = parseCommand(t);
+    if (voice.asleep && cmd?.type !== 'wake') return;
+    if (!cmd) {
+      setCapsule('miss', t, 1800);
+      return;
+    }
+    const reply = exec(cmd, 'voice');
+    setCapsule('ok', reply.text || t, 2600);
+    audio.play('voice_ack');
+    if (reply.speak) voice.speak(reply.speak);
+  };
+
+  // ---------------------------------------------------------------- gaze
+  let pointer: { x: number; y: number } | null = null;
+  window.addEventListener('pointermove', (e) => (pointer = { x: e.clientX, y: e.clientY }));
+  document.addEventListener('pointerleave', () => (pointer = null));
+  const gazeLive = () => gaze.state === 'tracking' || gaze.state === 'noface';
+  gaze.onState = (s) => {
+    chk('chk-cam', s === 'denied' || s === 'error' ? 'bad' : s === 'tracking' ? 'ok' : '', s === 'denied' ? 'Camera blocked: pointer stands in for gaze' : s === 'error' ? 'Gaze unavailable: pointer stands in' : s === 'tracking' ? 'Gaze · face locked' : s === 'starting' ? 'Gaze · starting camera' : s === 'noface' ? 'Gaze · looking for your face' : 'Gaze · camera');
+    document.body.classList.toggle('gaze-on', gazeLive());
+    if (sim.status === 'active' && (s === 'denied' || s === 'error')) hud.notify('Gaze unavailable: pointer stands in for your eyes', 'visibility_off');
+  };
+  let lastLockSound = 0;
+  targets.onLock = (t) => {
+    if (t && performance.now() - lastLockSound > 250) {
+      audio.play('gaze_lock');
+      lastLockSound = performance.now();
+    }
+  };
+
+  // ---------------------------------------------------------------- calibration
+  let calibrating = false;
+  const preview = $('calib-preview') as HTMLCanvasElement;
+  const drawPreview = () => {
+    const g = preview.getContext('2d')!;
+    g.save();
+    g.scale(-1, 1);
+    g.drawImage(gaze.video, -preview.width, 0, preview.width, preview.height);
+    g.restore();
+    const lmk = gaze.landmarks;
+    if (lmk) {
+      g.fillStyle = '#7ef9c1';
+      for (const i of [468, 473, 33, 133, 362, 263, 1]) {
+        const p = lmk[i];
+        g.beginPath();
+        g.arc((1 - p.x) * preview.width, p.y * preview.height, i >= 468 ? 2.6 : 1.4, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  };
+  const runCalibration = async (): Promise<number | null> => {
+    calibrating = true;
+    const scr = $('calib');
+    const dot = $('calib-dot');
+    const txt = $('calib-text');
+    scr.classList.remove('hidden');
+    let alive = true;
+    const pv = () => {
+      if (!alive) return;
+      if (gaze.video.readyState >= 2) drawPreview();
+      requestAnimationFrame(pv);
+    };
+    pv();
+    dot.style.opacity = '0';
+    $('calib-title').textContent = 'Gaze calibration';
+    txt.textContent = 'Looking for your face. Sit about an arm’s length from the screen, face lit from the front.';
+    const t0 = performance.now();
+    while (gaze.state !== 'tracking' && performance.now() - t0 < 15000) {
+      if (gaze.state === 'denied' || gaze.state === 'error') break;
+      await sleep(100);
+    }
+    let result: number | null = null;
+    if (gaze.state === 'tracking') {
+      txt.textContent = 'Follow the dot with your eyes. Keep your head still.';
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      const pts: [number, number][] = [];
+      for (const fy of [0.14, 0.5, 0.86]) for (const fx of [0.1, 0.5, 0.9]) pts.push([fx * W, fy * H]);
+      pts.sort(() => 0); // reading order
+      gaze.beginCalibration();
+      dot.style.opacity = '1';
+      for (const [x, y] of pts) {
+        dot.style.transform = `translate(${x}px, ${y}px)`;
+        dot.classList.remove('collect');
+        await sleep(650);
+        dot.classList.add('collect');
+        const end = performance.now() + 900;
+        while (performance.now() < end) {
+          gaze.addCalibrationSample(x, y);
+          await sleep(33);
+        }
+      }
+      dot.style.opacity = '0';
+      result = gaze.finishCalibration();
+      $('calib-title').textContent = result === null ? 'Calibration incomplete' : 'Gaze calibrated';
+      txt.textContent = result === null ? 'Your face was lost too often. Using head pointing instead. Say “calibrate” to try again.' : `Average error about ${Math.round(result)} px. Look at a feature and say “launch this”.`;
+      if (result === null) gaze.recentre();
+      await sleep(1600);
+    } else {
+      $('calib-title').textContent = 'Gaze unavailable';
+      txt.textContent = 'No camera or no face found. The pointer will stand in for your eyes.';
+      await sleep(1600);
+    }
+    alive = false;
+    scr.classList.add('hidden');
+    calibrating = false;
+    return result;
+  };
+
+  // ---------------------------------------------------------------- egress
+  const begin = async (withGaze: boolean) => {
+    $('btn-begin').setAttribute('disabled', '');
+    $('btn-skip-calib').setAttribute('disabled', '');
     await audio.init();
     audio.play('ui_click');
-    sim.start(training);
+    voice.start();
+    if (withGaze) {
+      await gaze.start();
+      $('briefing').classList.add('hidden');
+      await runCalibration();
+    }
+    $('briefing').classList.add('hidden');
+    $('hud').classList.remove('hidden');
+    sim.start(false);
     hud.refreshStatic();
-    hud.toast('Walk with W A S D · drag or arrow keys to look · H for help');
+    const hint = $('hint-line');
+    hint.innerHTML = voice.supported
+      ? 'Say <b>“what can I say”</b> · look at any feature and say <b>“launch this”</b> or <b>“check this feature’s progress”</b>'
+      : 'Voice needs Chrome or Edge here. Press <b>Enter</b> to type commands · click a feature to launch it';
+    hint.classList.add('show');
+    setTimeout(() => hint.classList.remove('show'), 14000);
+    hud.notify('Egress complete. Walk with W A S D, drag to look, scroll to zoom.', 'directions_walk', 6);
   };
-  $('btn-begin').onclick = () => begin(false);
-  $('btn-training').onclick = () => begin(true);
+  $('btn-begin').onclick = () => begin(true);
+  $('btn-skip-calib').onclick = () => begin(false);
 
-  // ---------------------------------------------------------------- sim events → audio/HUD
+  // ---------------------------------------------------------------- sim events → audio
   sim.on('incident', (def: any) => audio.play(def.severity === 'emergency' ? 'alert_emergency' : def.severity === 'warning' ? 'alert_warning' : 'alert_caution'));
-  sim.on('advisory', () => audio.play('reroute_chime'));
+  sim.on('incident', (def: any) => voice.speak(`${def.severity === 'emergency' ? 'Emergency.' : 'Caution.'} ${def.title}.`));
+  sim.on('advisory', () => {
+    audio.play('reroute_chime');
+    const a = sim.advisory;
+    if (a) voice.speak(`Reroute advised. ${a.reason.split('.')[0]}.`);
+  });
   sim.on('log', () => {
     const last = sim.log[sim.log.length - 1];
     if (last?.kind === 'sample') audio.play('sample_collect');
     if (last?.kind === 'hazard') audio.play('alert_caution');
   });
   sim.on('end', () => showDebrief());
+  hud.onIslandOpen = () => audio.play('island_open');
 
-  // ---------------------------------------------------------------- commands (voice + typed + keys share these)
-  const say = (text: string, speak = false) => {
-    $('cmd-feedback').textContent = `> ${text}`;
-    if (speak) voice.speak(text);
-  };
-  const handlers = {
-    toggleLayer: (l: string) => {
-      const on = hud.toggleLayer(l as LayerId);
-      return `${l.toUpperCase()} layer ${on ? 'on' : 'off'}`;
-    },
-    reroute: () => sim.requestReroute(),
-    markSample: () => sim.markSample(),
-    vitals: () => {
-      const h = sim.health;
-      return `Heart rate ${h.hr.toFixed(0)}. Oxygen ${((h.o2g / h.o2Cap) * 100).toFixed(0)} percent. Water ${((h.waterg / h.waterCap) * 100).toFixed(0)} percent. Battery ${((h.battWh / h.battCap) * 100).toFixed(0)} percent. Fatigue ${h.fatigue.toFixed(0)}. Dose ${h.doseMSv.toFixed(2)} millisievert. Core ${h.coreC.toFixed(1)} degrees.`;
-    },
-    drone: () => sim.launchDrone('scout'),
-    mode: () => toggleVisor(),
-    pace: (p?: string) => {
-      if (p) {
-        sim.pace = p as any;
-        (sim as any).planDirty = true;
-        return `Pace ${p}`;
+  // ---------------------------------------------------------------- features: launch / progress
+  const featureLabel = (id: string) => FEATURE_LABEL[id] ?? (id.startsWith('layer:') ? `${LAYER_INFO[id.slice(6) as LayerId]?.label ?? id} layer` : id);
+  const showProgress = (id: string): Reply => {
+    if ((FEATURES as string[]).includes(id)) {
+      const d = hud.featureDetail(id);
+      hud.showDetail(id, () => hud.featureDetail(id), 9);
+      return { text: `${d.title}: ${d.big}`, speak: d.speech };
+    }
+    if (id.startsWith('opt:')) {
+      const i = Number(id.slice(4));
+      if (sim.incident) {
+        const o = sim.incident.def.options[i];
+        return o ? { text: `Option ${i + 1}: ${o.label}`, speak: `Option ${i + 1}. ${o.label}. ${o.consequence}` } : { text: 'No such option' };
       }
-      sim.cyclePace();
-      return `Pace ${sim.pace}`;
-    },
-    hold: () => 'Release W to hold position',
-    map: () => {
-      toggleMap();
-      return hud.mapExpanded ? 'Map open' : 'Map closed';
-    },
-    help: () => 'Commands: toggle radiation, slope, POI, dust or magnetic layer; reroute; mark sample; vitals; launch drone; minimal visor; slow pace.',
+      const ch = sim.choices[i];
+      if (ch) return { text: `Route ${i + 1}: ${ch.name}`, speak: `Route ${i + 1}, ${ch.name}. ${km(ch.metrics.distance)}, about ${fmtDur(ch.forecast.timeS)} to the goal, peak fatigue ${ch.forecast.peakFatigue.toFixed(0)}, oxygen at the end ${(ch.forecast.o2End * 100).toFixed(0)} percent.` };
+    }
+    if (id.startsWith('layer:')) {
+      const l = id.slice(6) as LayerId;
+      return { text: `${LAYER_INFO[l].label}: ${hud.map.layers[l] ? 'on' : 'off'}`, speak: `${LAYER_INFO[l].label} layer is ${hud.map.layers[l] ? 'on' : 'off'}. ${LAYER_INFO[l].legend}.` };
+    }
+    if (id.startsWith('reroute') && sim.advisory) return { text: sim.advisory.reason, speak: sim.advisory.reason };
+    return showProgress('mission');
   };
-  const runCommand = (text: string, fromVoice: boolean) => {
-    const r = parseCommand(text, handlers);
-    const speakIt = fromVoice || /vitals|status|health/.test(text.toLowerCase());
-    say(r.ok ? `${text} ✓ ${r.reply}` : r.reply, speakIt && r.ok && /Heart rate|Commands|Reroute|alternate/i.test(r.reply));
-    if (r.ok) audio.play('ui_click');
+  const launch = (id: string): Reply => {
+    switch (id) {
+      case 'mission':
+      case 'o2':
+      case 'h2o':
+      case 'power':
+      case 'dose':
+      case 'fatigue':
+        return showProgress(id);
+      case 'map':
+      case 'layers':
+        openMap(true);
+        return { text: 'Navigator open' };
+      case 'route':
+        openMap(true);
+        return { text: 'Route planner open: click the map to add waypoints', speak: 'Route planner open.' };
+      case 'drone':
+        if (sim.drone.active) {
+          sim.recallDrone();
+          return { text: 'Drone recalled', speak: 'Drone returning.' };
+        }
+        return say(sim.launchDrone('scout'));
+      case 'sample':
+        return say(sim.markSample());
+      case 'reroute-accept':
+        return say(sim.acceptAdvisory());
+      case 'reroute-dismiss':
+        sim.dismissAdvisory();
+        return { text: 'Advisory dismissed' };
+      case 'plan-commit':
+        return sim.plannerCommit() ? (openMap(false), say('Planned route committed')) : { text: 'Add waypoints first' };
+      case 'plan-clear':
+        sim.plannerClear();
+        return { text: 'Route cleared' };
+      case 'map-close':
+        openMap(false);
+        return { text: 'Navigator closed' };
+    }
+    if (id.startsWith('opt:')) return option(Number(id.slice(4)) + 1);
+    if (id.startsWith('layer:')) return layer(id.slice(6) as LayerId);
+    return { text: `Nothing to launch on ${featureLabel(id)}` };
+  };
+  type Reply = { text: string; speak?: string };
+  const say = (text: string, speakIt = true): Reply => ({ text, speak: speakIt ? text : undefined });
+  const option = (n: number): Reply => {
+    if (sim.incident) {
+      const o = sim.incident.def.options[n - 1];
+      if (!o) return { text: `No option ${n}` };
+      sim.resolveIncident(n - 1);
+      return say(`Option ${n}: ${o.label}`);
+    }
+    if (sim.awaitingChoice && sim.choices[n - 1]) {
+      const ch = sim.choices[n - 1];
+      sim.choose(n - 1);
+      return say(`Route ${n}: ${ch.name}`);
+    }
+    return { text: 'No choice to make right now' };
+  };
+  const layer = (l: LayerId, on?: boolean): Reply => {
+    const v = hud.toggleLayer(l, on);
+    return say(`${LAYER_INFO[l].label} layer ${v ? 'on' : 'off'}`, false);
+  };
+  const vitalsReply = (): Reply => {
+    const h = sim.health;
+    hud.showDetail('vitals', () => {
+      const hh = sim.health;
+      return {
+        icon: 'ecg_heart',
+        title: 'Vitals',
+        big: `${hh.hr.toFixed(0)} bpm`,
+        rows: [
+          ['Oxygen', `${((hh.o2g / hh.o2Cap) * 100).toFixed(0)}%`],
+          ['Cooling water', `${((hh.waterg / hh.waterCap) * 100).toFixed(0)}%`],
+          ['Battery', `${((hh.battWh / hh.battCap) * 100).toFixed(0)}%`],
+          ['Fatigue', hh.fatigue.toFixed(0)],
+          ['Dose', `${hh.doseMSv.toFixed(2)} mSv`],
+          ['Core temp', `${hh.coreC.toFixed(1)} °C`],
+        ],
+        speech: '',
+      };
+    });
+    return {
+      text: 'Vitals',
+      speak: `Heart rate ${h.hr.toFixed(0)}. Oxygen ${((h.o2g / h.o2Cap) * 100).toFixed(0)} percent. Water ${((h.waterg / h.waterCap) * 100).toFixed(0)} percent. Battery ${((h.battWh / h.battCap) * 100).toFixed(0)} percent. Fatigue ${h.fatigue.toFixed(0)}. Dose ${h.doseMSv.toFixed(2)} millisievert.`,
+    };
+  };
+  const helpReply = (): Reply => {
+    hud.showDetail(
+      'help',
+      () => ({
+        icon: 'record_voice_over',
+        title: 'Say…',
+        big: '',
+        rows: [
+          ['Look + “launch this”', 'open / run what you look at'],
+          ['Look + “check this feature’s progress”', 'live status card'],
+          ['“Show / hide radiation”', 'slope · POI · dust · magnetic'],
+          ['“Reroute” · “accept” · “dismiss”', 'alternate route'],
+          ['“Mark sample”', 'collect at a sample site'],
+          ['“Vitals”', 'read life support aloud'],
+          ['“Launch / recall drone”', 'scout ahead'],
+          ['“Option two” · “route one”', 'decisions'],
+          ['“Open map” · “close”', 'navigator + planner'],
+          ['“Zoom in / out”', 'or scroll the mouse wheel'],
+          ['“Calibrate”', 'redo gaze calibration'],
+          ['“Stop listening” · “resume listening”', 'mic'],
+        ],
+        speech: '',
+      }),
+      14,
+    );
+    return { text: 'Commands shown above', speak: 'Look at a feature and say launch this, or check this feature’s progress. Or say vitals, reroute, mark sample, or show radiation.' };
+  };
+
+  const exec = (cmd: Command, source: 'voice' | 'typed'): Reply => {
+    if (sim.status !== 'active' && !['wake', 'sleep', 'help'].includes(cmd.type)) return { text: 'EVA not active' };
+    let r: Reply;
+    switch (cmd.type) {
+      case 'launchThis':
+      case 'progressThis': {
+        const t = targets.resolve();
+        if (!t) {
+          r = { text: gazeLive() ? 'Look at a feature first' : 'Point at a feature first', speak: 'Look at a feature first.' };
+          break;
+        }
+        t.el.classList.add('fired');
+        setTimeout(() => t.el.classList.remove('fired'), 500);
+        r = cmd.type === 'launchThis' ? launch(t.id) : showProgress(t.id);
+        r.text = `${featureLabel(t.id)} · ${r.text}`;
+        break;
+      }
+      case 'launch':
+        r = launch(cmd.feature);
+        break;
+      case 'progress':
+        r = showProgress(cmd.feature);
+        break;
+      case 'layer':
+        r = layer(cmd.layer, cmd.on);
+        break;
+      case 'reroute':
+        r = say(sim.advisory ? sim.acceptAdvisory() : sim.requestReroute());
+        break;
+      case 'accept':
+        r = sim.advisory ? say(sim.acceptAdvisory()) : sim.incident ? option(sim.incident.def.options.findIndex((o) => o.recommended) + 1) : { text: 'Nothing to accept' };
+        break;
+      case 'dismiss':
+        if (sim.advisory) {
+          sim.dismissAdvisory();
+          r = { text: 'Advisory dismissed' };
+        } else if (hud.mapExpanded) r = launch('map-close');
+        else {
+          hud.closeDetail();
+          r = { text: 'Cleared' };
+        }
+        break;
+      case 'sample':
+        r = say(sim.markSample());
+        break;
+      case 'vitals':
+        r = vitalsReply();
+        break;
+      case 'drone':
+        if (cmd.action === 'recall') {
+          sim.recallDrone();
+          r = say('Drone returning');
+        } else if (cmd.action === 'relay') r = say(sim.launchDrone('relay'));
+        else r = say(sim.drone.active ? 'Drone already airborne' : sim.launchDrone('scout'));
+        break;
+      case 'map':
+        openMap(cmd.open);
+        r = { text: cmd.open ? 'Navigator open' : 'Navigator closed' };
+        break;
+      case 'close':
+        if (hud.mapExpanded) openMap(false);
+        else hud.closeDetail();
+        r = { text: 'Closed' };
+        break;
+      case 'option':
+        r = option(cmd.n);
+        break;
+      case 'pace':
+        if (cmd.pace) {
+          sim.pace = cmd.pace;
+          (sim as any).planDirty = true;
+          sim.emit('change');
+        } else sim.cyclePace();
+        r = say(`Pace ${sim.pace}`);
+        break;
+      case 'zoom': {
+        const z = cmd.dir === 'reset' ? world.setZoom(1) : world.zoomBy(cmd.dir === 'in' ? 2 : 0.5);
+        r = { text: `Zoom ${z.toFixed(1)}×` };
+        break;
+      }
+      case 'calibrate':
+        if (gaze.state === 'off' || gaze.state === 'denied' || gaze.state === 'error') void gaze.start().then(runCalibration);
+        else void runCalibration();
+        r = { text: 'Calibrating gaze' };
+        break;
+      case 'commit':
+        r = launch('plan-commit');
+        break;
+      case 'clear':
+        r = launch('plan-clear');
+        break;
+      case 'help':
+        r = helpReply();
+        break;
+      case 'mute':
+        audio.setMuted(cmd.on);
+        r = { text: cmd.on ? 'Sound muted' : 'Sound on' };
+        break;
+      case 'sleep':
+        voice.sleep(true);
+        r = { text: 'Mic asleep. Say “resume listening”.' };
+        break;
+      case 'wake':
+        voice.sleep(false);
+        r = { text: 'Listening' };
+        break;
+    }
     hud.refreshStatic();
+    if (source === 'typed') r.speak = undefined;
+    return r;
   };
-  voice.onResult = (t) => runCommand(t, true);
-  voice.onState = (l) => $('btn-voice').classList.toggle('listening', l);
-  $('btn-voice').onclick = () => (voice.supported ? (voice.listening ? voice.stop() : voice.start()) : say('Speech recognition not supported here; type a command instead'));
+
+  // clicking a feature is the same as looking at it and saying "launch this"
+  document.addEventListener('click', (e) => {
+    if (sim.status !== 'active') return;
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-gaze]');
+    if (!el || el.id === 'island') return;
+    const r = launch(el.dataset.gaze!);
+    audio.play('ui_click');
+    setCapsule('ok', r.text, 2200);
+    hud.refreshStatic();
+  });
+  $('island').addEventListener('click', (e) => {
+    if (e.target === $('island') || (e.target as HTMLElement).closest('.i-idle')) {
+      const r = showProgress('mission');
+      setCapsule('ok', r.text, 2200);
+    }
+  });
+
+  // ---------------------------------------------------------------- typed fallback
   const input = $('cmd-input') as HTMLInputElement;
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') {
-      runCommand(input.value, false);
+      const cmd = parseCommand(input.value);
+      setCapsule(cmd ? 'ok' : 'miss', cmd ? exec(cmd, 'typed').text : `Not understood: ${input.value}`, 2600);
       input.value = '';
+      input.classList.add('hidden');
       input.blur();
     }
-    if (e.key === 'Escape') input.blur();
+    if (e.key === 'Escape') {
+      input.classList.add('hidden');
+      input.blur();
+    }
   });
 
-  // ---------------------------------------------------------------- visor modes (AR only: full navigator vs minimal visor)
-  const toggleVisor = (): string => {
-    const min = document.body.classList.toggle('minimal');
-    hud.refreshStatic();
-    hud.updateTelemetry();
-    return min ? 'Minimal visor: vitals strip only' : 'Full navigator';
+  // ---------------------------------------------------------------- navigator panel
+  const openMap = (open: boolean) => {
+    hud.mapExpanded = open;
+    hud.map.planning = open;
+    $('map-expanded').classList.toggle('hidden', !open);
+    if (open) hud.refreshPlanner();
   };
-  const toggleHelp = (show?: boolean) => $('help').classList.toggle('hidden', show === undefined ? undefined : !show);
-  $('btn-help').onclick = () => toggleHelp();
-  $('help').onclick = () => toggleHelp(false);
-
-  const toggleMap = () => {
-    hud.mapExpanded = !hud.mapExpanded;
-    $('map-expanded').classList.toggle('hidden', !hud.mapExpanded);
-    hud.map.planning = hud.mapExpanded || hud.planning;
-    hud.refreshPlanner();
-  };
-  $('btn-map-expand').onclick = toggleMap;
-  $('btn-map-close').onclick = toggleMap;
-  $('btn-plan').onclick = () => {
-    hud.planning = !hud.planning;
-    hud.map.planning = hud.planning;
-    $('btn-plan').classList.toggle('on', hud.planning);
-    if (!hud.planning) sim.plannerClear();
-    say(hud.planning ? 'Planner on: click map to add waypoints' : 'Planner off');
-  };
-  const mapClick = (canvas: HTMLCanvasElement, requirePlanning: boolean) => (ev: MouseEvent) => {
-    if (requirePlanning && !hud.planning) return;
-    const r = canvas.getBoundingClientRect();
+  $('map-canvas-large').addEventListener('click', (ev) => {
+    const cv = $('map-canvas-large');
+    const r = cv.getBoundingClientRect();
     const p = hud.map.fromPx(ev.clientX - r.left, ev.clientY - r.top, r.width, r.height);
     const node = sim.plannerAdd(p.e, p.n);
-    say(node ? `Waypoint ${sim.plannerNodes.length}: ${node.name}` : 'No traverse node near that point');
+    setCapsule(node ? 'ok' : 'miss', node ? `Waypoint ${sim.plannerNodes.length}: ${node.name}` : 'No traverse node near there', 2000);
     hud.refreshPlanner();
-  };
-  $('map-canvas').addEventListener('click', mapClick($('map-canvas') as HTMLCanvasElement, true));
-  $('map-canvas-large').addEventListener('click', mapClick($('map-canvas-large') as HTMLCanvasElement, false));
-  $('btn-plan-commit').onclick = () => {
-    if (sim.plannerCommit()) {
-      say('Planned route committed');
-      if (hud.mapExpanded) toggleMap();
-      hud.planning = false;
-      $('btn-plan').classList.remove('on');
-    }
-  };
-  $('btn-plan-clear').onclick = () => sim.plannerClear();
-  $('btn-reroute-accept').onclick = () => say(sim.acceptAdvisory());
-  $('ar-reroute').onclick = () => say(sim.acceptAdvisory());
-  $('btn-reroute-dismiss').onclick = () => sim.dismissAdvisory();
-  const droneToggle = () => {
-    if (sim.drone.active) {
-      sim.recallDrone();
-      return 'Drone recalled';
-    }
-    return sim.launchDrone('scout');
-  };
-  $('btn-drone').onclick = () => say(sim.launchDrone('scout'));
-  $('btn-drone-recall').onclick = () => sim.recallDrone();
-  const mute = () => ($('btn-mute').innerHTML = `<span class="ms">${audio.toggleMute() ? 'volume_off' : 'volume_up'}</span>`);
-  $('btn-mute').onclick = mute;
+  });
+  $('map-expanded').addEventListener('click', (e) => {
+    if (e.target === $('map-expanded')) openMap(false);
+  });
 
-  // ---------------------------------------------------------------- look controls (drag)
+  // ---------------------------------------------------------------- mouse: look + zoom
   let dragging = false;
   let lx = 0;
   let ly = 0;
@@ -249,109 +560,52 @@ async function boot() {
   });
   vp.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    sim.lookYaw += (e.clientX - lx) * 0.004;
-    world.pitch = Math.max(-1.2, Math.min(0.9, world.pitch - (e.clientY - ly) * 0.003));
+    const k = 1 / world.zoom;
+    sim.lookYaw += (e.clientX - lx) * 0.004 * k;
+    world.pitch = Math.max(-1.2, Math.min(0.9, world.pitch - (e.clientY - ly) * 0.003 * k));
     lx = e.clientX;
     ly = e.clientY;
   });
   vp.addEventListener('pointerup', () => (dragging = false));
-  vp.addEventListener('dblclick', () => (world.pitch = -0.05));
+  vp.addEventListener('dblclick', () => world.setZoom(1));
+  let zoomShownUntil = 0;
+  window.addEventListener(
+    'wheel',
+    (e) => {
+      if (sim.status !== 'active' || hud.mapExpanded || calibrating) return;
+      e.preventDefault();
+      world.zoomBy(Math.exp(-e.deltaY * 0.0015));
+      zoomShownUntil = performance.now() + 1500;
+    },
+    { passive: false },
+  );
 
-  // ---------------------------------------------------------------- keyboard
+  // ---------------------------------------------------------------- keyboard: movement only
   const held = new Set<string>();
   const typing = () => document.activeElement === input;
   window.addEventListener('blur', () => held.clear());
   window.addEventListener('keydown', (e) => {
-    if (typing()) return;
-    if (sim.status !== 'active') return;
+    if (typing() || sim.status !== 'active') return;
     const k = e.key.toLowerCase();
     if (['w', 'a', 's', 'd', 'shift', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(k)) {
       held.add(k);
       if (k.startsWith('arrow')) e.preventDefault();
       return;
     }
-    if (e.key === 'Tab') {
+    if (e.key === 'Enter') {
+      // accessibility fallback when no microphone is available
       e.preventDefault();
-      say(toggleVisor());
-      return;
-    }
-    if (sim.incident && ['1', '2', '3', '4'].includes(k)) {
-      sim.resolveIncident(Number(k) - 1);
-      audio.play('ui_click');
-      return;
-    }
-    if (['1', '2', '3', '4'].includes(k)) {
-      sim.choose(Number(k) - 1);
-      audio.play('ui_click');
-      hud.refreshStatic();
-      return;
-    }
-    if (e.code === 'Space') {
-      e.preventDefault();
-      if (e.repeat) return;
-      if (voice.supported) voice.start();
-      else say('Speech not supported in this browser; press Enter to type');
-      return;
-    }
-    switch (k) {
-      case 'r':
-        say(sim.advisory ? sim.acceptAdvisory() : sim.requestReroute());
-        break;
-      case 'x':
-        sim.dismissAdvisory();
-        break;
-      case 'f':
-        say(sim.markSample());
-        break;
-      case 'g':
-        sim.cyclePace();
-        say(`Pace ${sim.pace}`);
-        break;
-      case 'q':
-        say(droneToggle());
-        break;
-      case 'v':
-        say(handlers.vitals(), true);
-        break;
-      case 'm':
-        toggleMap();
-        break;
-      case 'h':
-        toggleHelp();
-        break;
-      case 'k':
-        mute();
-        break;
-      case 'c':
-        world.pitch = -0.05;
-        break;
-      case 'enter':
-        e.preventDefault();
-        input.focus();
-        break;
-      case '[':
-        sim.warp = Math.max(1, Math.round(sim.warp / 2));
-        break;
-      case ']':
-        sim.warp = Math.min(120, sim.warp * 2);
-        break;
-      case '0':
-        sim.warp = WARP;
-        break;
-      case 'escape':
-        if (!$('help').classList.contains('hidden')) toggleHelp(false);
-        else if (hud.mapExpanded) toggleMap();
-        break;
-      default:
-        return;
-    }
-    if (['r', 'x', 'f', 'g', 'q'].includes(k)) audio.play('ui_click');
-    hud.refreshStatic();
+      input.classList.remove('hidden');
+      input.focus();
+    } else if (e.key === 'Escape') {
+      if (hud.mapExpanded) openMap(false);
+      else hud.closeDetail();
+    } else if (e.key === '[') sim.warp = Math.max(1, Math.round(sim.warp / 2)); // demo operator: time warp
+    else if (e.key === ']') sim.warp = Math.min(120, sim.warp * 2);
   });
   window.addEventListener('keyup', (e) => {
     held.delete(e.key.toLowerCase());
     if (e.key === 'Shift') held.delete('shift');
-    if (e.code === 'Space' && !typing()) setTimeout(() => voice.stop(), 400);
   });
   const applyInput = (dt: number) => {
     const blocked = typing() || hud.mapExpanded || !!sim.incident || sim.status !== 'active';
@@ -359,16 +613,16 @@ async function boot() {
     sim.input.f = h('w') - h('s');
     sim.input.r = h('d') - h('a');
     sim.input.sprint = !!h('shift');
-    sim.lookYaw += (h('arrowright') - h('arrowleft')) * 1.6 * dt;
-    world.pitch = Math.max(-1.2, Math.min(0.9, world.pitch + (h('arrowup') - h('arrowdown')) * 0.9 * dt));
+    sim.lookYaw += ((h('arrowright') - h('arrowleft')) * 1.6 * dt) / world.zoom;
+    world.pitch = Math.max(-1.2, Math.min(0.9, world.pitch + ((h('arrowup') - h('arrowdown')) * 0.9 * dt) / world.zoom));
   };
 
   // ---------------------------------------------------------------- debrief
   const showDebrief = () => {
     $('hud').classList.add('hidden');
-    $('incident-modal').classList.add('hidden');
-    $('help').classList.add('hidden');
     $('map-expanded').classList.add('hidden');
+    voice.stop();
+    gaze.stop();
     $('debrief').classList.remove('hidden');
     const h = sim.health;
     const failed = sim.status === 'failed';
@@ -379,7 +633,7 @@ async function boot() {
     const tag = $('debrief-tag');
     tag.className = `d-tag ${failed ? 'fail' : aborted ? 'abort' : ''}`;
     tag.textContent = failed ? '● CRITICAL SIMULATION EVENT // ABORT RECORDED' : aborted ? 'MISSION ABORTED' : '✓ RECOVERY SUCCESSFUL';
-    $('debrief-sub').textContent = `${m.title} // MET ${fmtMET(sim.met)} // SOL ${m.sol}${sim.training ? ' // TRAINING MODE' : ''}${failed ? ' // crew member recovered by rover rescue in simulation' : ' // airlock pressurised'}`;
+    $('debrief-sub').textContent = `${m.title} // MET ${fmtMET(sim.met)} // SOL ${m.sol}${failed ? ' // crew member recovered by rover rescue in simulation' : ' // airlock pressurised'}`;
     const samples = m.objectives.filter((o) => o.kind === 'sample');
     const got = samples.filter((o) => sim.objectivesDone.has(o.id)).length;
     const pct = (v: number) => `${(v * 100).toFixed(0)}<small style="font-size:14px">%</small>`;
@@ -407,7 +661,7 @@ async function boot() {
       row('Peak fatigue', Math.max(...sim.history.map((p) => p.fatigue), h.fatigue).toFixed(0)),
       row('Lowest O2', `${(Math.min(...sim.history.map((p) => p.o2), o2f) * 100).toFixed(0)}%`),
     ].join('') + `<p>${speAvoided ? 'Sheltered during the solar particle event. ' : ''}Geography decided the risk: slope and surface drove metabolic cost and O2, open sky drove dose, and every route choice was shown with its forecast cost before it was taken.</p>`;
-    $('debrief-rc-title').innerHTML = `<i class="sqd" style="background:${failed ? 'var(--warning)' : 'var(--accent)'}"></i>${failed ? 'ROOT CAUSE TRAJECTORY FAILURE' : 'NAVIGATOR IMPACT'}`;
+    $('debrief-rc-title').textContent = failed ? 'Root cause' : 'Navigator impact';
     if (failed) {
       const chain = sim.log.filter((l) => l.kind === 'incident' || (l.kind === 'decision' && l.decision?.includes('not recommended')) || (l.kind === 'reroute' && l.decision === 'Dismissed')).slice(-3);
       $('debrief-rootcause').innerHTML = `<div class="rc-chain">${chain.map((l, i) => `<div class="rc-step"><span class="lbl">STEP ${String(i + 1).padStart(2, '0')} · MET ${fmtMET(l.met)}</span><b>${esc(l.title)}</b>${l.decision ? `<div class="sub">${esc(l.decision)}</div>` : ''}</div>`).join('')}<div class="rc-step"><span class="lbl warning-t">FAILURE · MET ${fmtMET(sim.met)}</span><b>${esc(sim.failReason)}</b></div></div>`;
@@ -435,18 +689,30 @@ async function boot() {
   $('btn-new').onclick = () => location.reload();
 
   // ---------------------------------------------------------------- loop
+  const cursor = $('gaze-cursor');
+  const zoomEl = $('zoom-readout');
   let last = performance.now();
   const frame = (now: number) => {
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    const wasIncident = !!sim.incident;
-    applyInput(dt);
-    sim.update(dt);
-    if (wasIncident && !sim.incident) hud.refreshStatic();
+    if (!calibrating) {
+      applyInput(dt);
+      sim.update(dt);
+    }
     world.update(dt);
     world.render($('drone-pip'));
     if (sim.status === 'active') {
       hud.update(dt);
+      // gaze → target (pointer stands in when no camera)
+      const gp = gaze.state === 'tracking' && gaze.point ? gaze.point : pointer;
+      targets.update(calibrating ? null : gp, now);
+      if (gaze.state === 'tracking' && gp) {
+        cursor.style.transform = `translate(${gp.x}px, ${gp.y}px)`;
+        cursor.classList.add('on');
+      } else cursor.classList.remove('on');
+      const z = world.zoomTarget;
+      zoomEl.textContent = z > 1.01 ? `${z.toFixed(1)}×` : '';
+      zoomEl.classList.toggle('show', z > 1.01 || now < zoomShownUntil);
       // audio mix follows state
       const agg = sim.agg();
       audio.setLevel('ambient_wind', 0.15);
@@ -460,7 +726,7 @@ async function boot() {
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
-  void fmtDur;
+  void fmtMET;
 }
 
 boot();
