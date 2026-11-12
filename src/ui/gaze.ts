@@ -121,6 +121,8 @@ export class GazeTracker {
   /** last raw landmarks (for the calibration preview) */
   landmarks: NormalizedLandmark[] | null = null;
   accuracyPx = 0;
+  /** human-readable reason when state is denied/error */
+  lastError = '';
   video: HTMLVideoElement;
   onState: (s: GazeState) => void = () => {};
   private lm: FaceLandmarker | null = null;
@@ -156,19 +158,36 @@ export class GazeTracker {
 
   async start() {
     if (this.state !== 'off' && this.state !== 'error' && this.state !== 'denied') return;
-    if (!this.supported) return this.set('error');
+    if (!this.supported) {
+      this.lastError = window.isSecureContext ? 'This browser has no camera API.' : 'Camera needs https:// or http://localhost (not a file:// page).';
+      return this.set('error');
+    }
     this.set('starting');
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false });
     } catch (e: any) {
-      this.set(e?.name === 'NotAllowedError' ? 'denied' : 'error');
+      const name = String(e?.name ?? '');
+      console.warn('[TEVAN gaze] camera error:', name, e?.message ?? e);
+      this.lastError =
+        name === 'NotAllowedError' ? 'Camera permission denied. Click the icon left of the address bar, allow Camera, reload.'
+        : name === 'NotFoundError' ? 'No camera found on this computer.'
+        : name === 'NotReadableError' ? 'Camera is busy: close Zoom/Teams/Camera app or other tabs using it, then reload.'
+        : name === 'SecurityError' ? 'Camera needs https:// or http://localhost (not a file:// page).'
+        : `Camera error: ${name || e}`;
+      this.set(name === 'NotAllowedError' ? 'denied' : 'error');
       return;
     }
     this.video.srcObject = this.stream;
     await this.video.play().catch(() => {});
     try {
-      this.lm = await this.createLandmarker(WASM_LOCAL, MODEL_LOCAL).catch(() => this.createLandmarker(WASM_CDN, MODEL_CDN));
-    } catch {
+      this.lm = await this.createLandmarker(WASM_LOCAL, MODEL_LOCAL).catch((e) => {
+        console.warn('[TEVAN gaze] local model failed, trying CDN:', e);
+        return this.createLandmarker(WASM_CDN, MODEL_CDN);
+      });
+      console.info('[TEVAN gaze] face landmarker ready');
+    } catch (e) {
+      console.error('[TEVAN gaze] could not load the face model:', e);
+      this.lastError = 'Eye-tracking model failed to load (see browser console, F12).';
       this.set('error');
       return;
     }

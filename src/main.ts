@@ -6,7 +6,7 @@ import { Hud, fmtDur, fmtMET, FEATURE_LABEL, km, esc } from './ui/hud';
 import { TacticalMap, LayerId, LAYER_INFO } from './ui/map';
 import { drawChart } from './ui/chart';
 import { Audio } from './ui/audio';
-import { Voice, parseCommand, Command, FeatureId } from './ui/voice';
+import { Voice, parseCommand, Command, FeatureId, VOICE_ERRORS } from './ui/voice';
 import { GazeTracker } from './ui/gaze';
 import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
@@ -67,6 +67,11 @@ async function boot() {
   };
   chk('chk-mic', voice.supported ? '' : 'bad', voice.supported ? 'Voice · microphone' : 'Voice needs Chrome or Edge (type with Enter)');
   chk('chk-cam', gaze.supported ? '' : 'bad', gaze.supported ? 'Gaze · camera' : 'No camera API: pointer stands in for gaze');
+  if (!window.isSecureContext) {
+    chk('chk-mic', 'bad', 'Open via http://localhost or https:// for mic');
+    chk('chk-cam', 'bad', 'Open via http://localhost or https:// for camera');
+  }
+  console.info('[TEVAN] secure context:', window.isSecureContext, '· speech API:', voice.supported, '· camera API:', gaze.supported, '·', navigator.userAgent);
   $('loading').classList.add('hidden');
   $('briefing').classList.remove('hidden');
   requestAnimationFrame(() => briefMap.draw($('brief-map') as HTMLCanvasElement, { t: 0, large: true }));
@@ -83,9 +88,15 @@ async function boot() {
   };
   const voiceIdleClass = () => (voice.state === 'denied' ? 'err' : voice.state === 'asleep' ? 'asleep' : voice.state === 'listening' || voice.state === 'hearing' ? 'listening' : 'idle');
   voice.onState = (s) => {
-    if (s === 'denied') setCapsule('err', 'Microphone blocked');
+    if (s === 'denied') setCapsule('err', VOICE_ERRORS[voice.lastError] ?? 'Microphone blocked');
+    else if (s === 'error') setCapsule('err', VOICE_ERRORS[voice.lastError] ?? 'Voice unavailable');
     else if (s !== 'hearing' && !capsule.classList.contains('ok') && !capsule.classList.contains('miss')) setCapsule(voiceIdleClass());
-    chk('chk-mic', s === 'denied' ? 'bad' : s === 'listening' ? 'ok' : '', s === 'denied' ? 'Microphone blocked' : s === 'listening' ? 'Voice · listening' : 'Voice · microphone');
+    if (s !== 'denied' && s !== 'error') chk('chk-mic', s === 'listening' ? 'ok' : '', s === 'listening' ? 'Voice · listening' : 'Voice · microphone');
+  };
+  voice.onError = (code, msg) => {
+    setCapsule('err', msg, code === 'network' || code === 'audio-capture' ? 0 : 6000);
+    chk('chk-mic', 'bad', msg);
+    if (sim.status === 'active') hud.notify(msg, 'mic_off', 8);
   };
   voice.onInterim = (t) => {
     if (voice.asleep) return;
@@ -110,9 +121,9 @@ async function boot() {
   document.addEventListener('pointerleave', () => (pointer = null));
   const gazeLive = () => gaze.state === 'tracking' || gaze.state === 'noface';
   gaze.onState = (s) => {
-    chk('chk-cam', s === 'denied' || s === 'error' ? 'bad' : s === 'tracking' ? 'ok' : '', s === 'denied' ? 'Camera blocked: pointer stands in for gaze' : s === 'error' ? 'Gaze unavailable: pointer stands in' : s === 'tracking' ? 'Gaze · face locked' : s === 'starting' ? 'Gaze · starting camera' : s === 'noface' ? 'Gaze · looking for your face' : 'Gaze · camera');
+    chk('chk-cam', s === 'denied' || s === 'error' ? 'bad' : s === 'tracking' ? 'ok' : '', s === 'denied' || s === 'error' ? gaze.lastError || 'Gaze unavailable: pointer stands in' : s === 'tracking' ? 'Gaze · face locked' : s === 'starting' ? 'Gaze · starting camera' : s === 'noface' ? 'Gaze · looking for your face' : 'Gaze · camera');
     document.body.classList.toggle('gaze-on', gazeLive());
-    if (sim.status === 'active' && (s === 'denied' || s === 'error')) hud.notify('Gaze unavailable: pointer stands in for your eyes', 'visibility_off');
+    if (sim.status === 'active' && (s === 'denied' || s === 'error')) hud.notify(gaze.lastError || 'Gaze unavailable: pointer stands in for your eyes', 'visibility_off', 8);
   };
   let lastLockSound = 0;
   targets.onLock = (t) => {
@@ -192,8 +203,8 @@ async function boot() {
       await sleep(1600);
     } else {
       $('calib-title').textContent = 'Gaze unavailable';
-      txt.textContent = 'No camera or no face found. The pointer will stand in for your eyes.';
-      await sleep(1600);
+      txt.textContent = gaze.lastError || (gaze.state === 'noface' ? 'Camera is on but no face was found. Face the camera with light in front of you, then say “calibrate”.' : gaze.state === 'starting' ? 'The eye-tracking model is still loading. Say “calibrate” in a moment.' : 'The pointer will stand in for your eyes.');
+      await sleep(4000);
     }
     alive = false;
     scr.classList.add('hidden');
@@ -205,11 +216,13 @@ async function boot() {
   const begin = async (withGaze: boolean) => {
     $('btn-begin').setAttribute('disabled', '');
     $('btn-skip-calib').setAttribute('disabled', '');
+    // start mic + camera inside the click (user gesture) so the permission prompts appear right away
+    voice.start();
+    const gazeReady = withGaze ? gaze.start() : Promise.resolve();
     await audio.init();
     audio.play('ui_click');
-    voice.start();
     if (withGaze) {
-      await gaze.start();
+      await gazeReady;
       $('briefing').classList.add('hidden');
       await runCalibration();
     }

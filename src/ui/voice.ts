@@ -136,7 +136,16 @@ export function parseCommand(text: string): Command | null {
   return null;
 }
 
-export type VoiceState = 'off' | 'listening' | 'hearing' | 'asleep' | 'denied' | 'unsupported';
+export type VoiceState = 'off' | 'listening' | 'hearing' | 'asleep' | 'denied' | 'unsupported' | 'error';
+
+/** Human-readable explanation of a SpeechRecognition error code. */
+export const VOICE_ERRORS: Record<string, string> = {
+  'not-allowed': 'Microphone permission denied. Click the icon left of the address bar, allow Microphone, reload.',
+  'service-not-allowed': 'This browser blocks speech recognition. Use Google Chrome or Microsoft Edge.',
+  'audio-capture': 'No microphone found, or another app is using it. Check Windows sound settings.',
+  network: 'Speech service unreachable. Chrome/Edge need internet for voice (Brave, Opera and Chromium builds usually fail here).',
+  'language-not-supported': 'English (US) speech is not available in this browser.',
+};
 
 export class Voice {
   private rec: any = null;
@@ -153,6 +162,10 @@ export class Voice {
   onState: (s: VoiceState) => void = () => {};
   /** smoothed mic activity 0..1 for the UI (from the recognizer's sound events) */
   level = 0;
+  /** last error code from the recognizer, for on-screen diagnostics */
+  lastError = '';
+  onError: (code: string, message: string) => void = () => {};
+  private errorCount = 0;
 
   constructor() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -186,10 +199,23 @@ export class Voice {
     rec.onspeechstart = () => (this.level = 1);
     rec.onspeechend = () => (this.level = 0);
     rec.onerror = (e: any) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      const code = String(e.error ?? 'unknown');
+      if (code === 'no-speech' || code === 'aborted') return; // normal in continuous mode
+      console.warn('[TEVAN voice] recognition error:', code, e.message ?? '');
+      this.lastError = code;
+      this.errorCount++;
+      if (code === 'not-allowed' || code === 'service-not-allowed') {
         this.want = false;
         this.set('denied');
+      } else if (this.errorCount >= 3 && (code === 'network' || code === 'audio-capture' || code === 'language-not-supported')) {
+        this.want = false; // stop the restart loop; the UI explains why
+        this.set('error');
       }
+      this.onError(code, VOICE_ERRORS[code] ?? `Speech recognition error: ${code}`);
+    };
+    rec.onstart = () => {
+      console.info('[TEVAN voice] listening');
+      this.set(this.asleep ? 'asleep' : 'listening');
     };
     rec.onend = () => {
       // Chrome ends continuous sessions after silence/timeouts: keep the mic hot.
@@ -211,7 +237,6 @@ export class Voice {
     if (!this.rec || !this.want) return;
     try {
       this.rec.start();
-      this.set(this.asleep ? 'asleep' : 'listening');
     } catch {
       /* already running */
     }
@@ -219,6 +244,7 @@ export class Voice {
 
   start() {
     if (!this.rec) return;
+    this.errorCount = 0;
     this.want = true;
     this.startRec();
   }
@@ -237,7 +263,8 @@ export class Voice {
   }
 
   isSpeaking() {
-    return performance.now() < this.speakingUntil || (typeof speechSynthesis !== 'undefined' && speechSynthesis.speaking);
+    // timer only: Chrome's speechSynthesis.speaking can get stuck at true, which would mute every command
+    return performance.now() < this.speakingUntil;
   }
 
   /** Speak a reply; the recognizer ignores what it hears while this plays. */
@@ -247,7 +274,7 @@ export class Voice {
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.07;
     u.pitch = 0.95;
-    this.speakingUntil = performance.now() + 400 + text.length * 70;
+    this.speakingUntil = performance.now() + Math.min(9000, 400 + text.length * 65);
     u.onend = () => (this.speakingUntil = performance.now() + 350);
     speechSynthesis.speak(u);
   }
