@@ -6,16 +6,78 @@ A helmet navigator for astronauts on a Marswalk, built for NASA Space Apps 2026 
 
 There are no modes. There's no training mode, VR mode or AR mode, only the astronaut on an EVA.
 
-## Run it
+## Quick start (judges and visitors)
+
+> **Use Google Chrome or Microsoft Edge on a laptop or desktop with a webcam and microphone.**
+> Firefox can't do voice commands, and Safari's support is unreliable.
+
+1. **Open the live link:** `https://<your-site>.netlify.app` _(fill in after deploying)_.
+2. **Allow the camera and microphone** when the browser asks. TEVAN uses your laptop's built-in webcam, so no extra hardware is needed.
+3. Click **"Calibrate gaze & begin EVA"** and follow the dot with your eyes for about 10 seconds. Keep your head still.
+4. You're on Mars. Walk with **W A S D** (Shift to sprint), **drag the mouse** to look around, and **scroll** to zoom.
+5. **Talk to TEVAN.** It is always listening, so there's no button to press. Start with:
+   - "what can I say"
+   - "vitals"
+   - "show radiation"
+   - "reroute"
+   - "mark sample"
+   - "launch drone"
+   - look at a feature (an oxygen ring, the radar, a dock icon) and say **"launch this feature"** or **"check this feature's progress"**
+
+No camera, or you'd rather skip calibration? Click **"Begin without gaze"**, and the mouse pointer then stands in for your eyes.
+
+### Tips for good gaze tracking
+
+- Light your face **from the front**. A bright window behind you makes tracking much worse.
+- Sit about **an arm's length** from the screen, with your face centred in the camera.
+- Only **one person** should be in front of the camera. TEVAN tracks a single face.
+- If the highlight drifts, say **"calibrate"** to redo the calibration.
+
+### Tips for voice
+
+- Speak normally, in short commands. The bubble next to the top pill shows what TEVAN heard.
+- TEVAN ignores its own spoken replies, so wait for it to finish talking before your next command.
+- A quiet room helps. Speakers turned up loud can trigger false commands, so headphones are best.
+- Say **"stop listening"** to pause the mic and **"resume listening"** to turn it back on.
+
+### Caveats
+
+| Topic | What to know |
+|---|---|
+| Browser | Chrome or Edge only for voice. On other browsers the start screen warns you, and **Enter** opens a typed command line instead. |
+| HTTPS | Camera and mic only work on `https://` or `localhost`. Netlify provides HTTPS automatically. Opening `index.html` straight from disk (`file://`) won't work. |
+| Privacy | Gaze runs entirely in your browser, and no video leaves the computer. Chrome/Edge speech recognition sends audio to the browser vendor's speech service (Google or Microsoft) to turn it into text. |
+| Internet | Needed for voice (the speech service) and fonts. Gaze, the map and the simulation work offline once loaded. |
+| Gaze accuracy | A laptop webcam can tell which feature you're looking at, but not pick out a tiny button. Targets are deliberately large. |
+| Performance | Gaze runs fastest with a GPU. On weak machines, close other tabs. The first load downloads a ~13 MB eye-tracking model and runtime. |
+| Data | Terrain, radiation and incidents are **synthetic placeholders** until the NASA challenge data is loaded (see "Swapping in NASA data"). |
+| Permissions denied by mistake | Click the camera/lock icon in the address bar → allow Camera and Microphone → reload. |
+
+## Run it locally (developers)
+
+You need [Node.js 20+](https://nodejs.org).
 
 ```bash
+git clone https://github.com/itzjayden04/tactical-eva-navigator.git
+cd tactical-eva-navigator
 npm install
-npm run dev        # http://localhost:5173 (camera + mic work on localhost)
-npm run build      # static site in dist/
+npm run dev        # open http://localhost:5173 in Chrome or Edge
+```
+
+Other commands:
+
+```bash
+npm run build      # production build into dist/
+npm run preview    # serve the production build at http://localhost:4173
 npm test           # engine tests (full mission autoplay) + voice grammar
 ```
 
-Use **Chrome or Edge**. Voice uses the Web Speech API, which Firefox and Safari don't fully support. Camera and microphone only work on `https://` or `localhost`.
+## Deploy to Netlify
+
+Choose either option.
+
+- **Connect the repo:** on app.netlify.com choose *Add new site → Import from Git → tactical-eva-navigator*. The settings come from `netlify.toml` (build `npm run build`, publish `dist`).
+- **Drag and drop:** run `npm run build` locally, then drag the `dist/` folder onto https://app.netlify.com/drop.
 
 ## How the astronaut uses it
 
@@ -71,15 +133,6 @@ The WASM runtime is copied from `node_modules` into `public/mediapipe/` on `pred
 | 8 | Drone scout | "launch drone" (or look at Drone and say "launch this"). It flies ahead, clears fog of war, finds hidden hazards, and streams a live feed to the visor. |
 
 Demo-operator keys (not part of the astronaut UX): `[` and `]` change time warp.
-
-## Hosting
-
-TEVAN is a static site, so deploy it to **Netlify**:
-
-- build command `npm run build`
-- publish directory `dist`
-
-HTTPS is automatic, and camera and mic need it. It only needs a server (Railway, or a Netlify Function) if you add something secret, such as an LLM API key.
 
 ## Architecture
 
