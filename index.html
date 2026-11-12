@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tactical EVA Navigator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block" rel="stylesheet" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <!-- 3D world (rendered behind the AR helmet HUD) -->
+    <div id="viewport"></div>
+    <div id="visor"></div>
+    <div id="dose-vignette"></div>
+
+    <!-- ===================== AR HELMET HUD ===================== -->
+    <div id="hud" class="hidden">
+      <header id="hud-topbar">
+        <div class="tb-left">
+          <div id="hud-eva-id" class="eva-badge">EVA-03</div>
+          <div class="tb-stack"><span class="lbl">MET</span><span id="hud-met" class="mono strong">00:00:00</span></div>
+          <div id="hud-warp" class="warp-box">TIME WARP ×10</div>
+          <span id="hud-lmst" class="mono muted">SOL 412 · 09:14 LMST</span>
+        </div>
+        <div id="hud-compass">
+          <div id="compass-tape"></div>
+          <div id="hud-compass-target"></div>
+          <div id="hud-heading" class="mono">000°</div>
+          <div class="caret"></div>
+        </div>
+        <div class="tb-right">
+          <span id="hud-comms" class="mono"><i class="dot ok"></i>COMMS AOS</span>
+          <span id="hud-datasource" class="data-box">DATA: SYNTHETIC</span>
+          <button id="btn-mute" class="icon-btn" title="Mute [K]"><span class="ms">volume_up</span></button>
+          <button id="btn-help" class="icon-btn" title="Help [H]"><span class="mono">H</span></button>
+        </div>
+      </header>
+
+      <!-- left: EMU vitals -->
+      <section id="panel-vitals" class="glass panel rail">
+        <h3><span class="ms">monitor_heart</span>EMU VITALS <i class="dot ok push"></i></h3>
+        <div class="tiles2">
+          <div class="readout" id="v-hr"><span class="lbl">HEART RATE</span><span class="val">--</span><span class="unit">bpm</span><b class="bar"><i></i></b></div>
+          <div class="readout" id="v-met"><span class="lbl">MET RATE</span><span class="val">--</span><span class="unit">W</span><b class="bar"><i></i></b></div>
+          <div class="readout" id="v-core"><span class="lbl">CORE TEMP</span><span class="val">--</span><span class="unit">°C</span><b class="bar"><i></i></b></div>
+          <div class="readout" id="v-press"><span class="lbl">SUIT PRESS</span><span class="val">--</span><span class="unit">kPa</span><b class="bar"><i></i></b></div>
+        </div>
+        <div class="readout gauge" id="v-fatigue">
+          <span class="lbl">FATIGUE INDEX</span><span class="val">--</span><span class="unit">/ 100</span>
+          <b class="bar"><i></i><em class="tick" style="left: 70%"></em></b>
+          <span class="tick-lbls"><span>RESTED</span><span class="caution-t">▲ REROUTE (70)</span><span>CRITICAL</span></span>
+        </div>
+        <div class="readout line" id="v-co2"><span class="lbl">PPCO2 PURGE LOOP</span><span class="val">--</span><span class="unit">kPa</span><b class="bar"><i></i></b></div>
+        <div class="pace-row"><span class="lbl">PACE</span><span id="v-pace" class="mono">NOMINAL</span><span class="lbl">SPEED</span><span id="v-speed" class="mono">0.0 m/s</span></div>
+        <div id="v-mods"></div>
+      </section>
+
+      <!-- right: life support -->
+      <aside id="col-right">
+        <section id="panel-consumables" class="glass panel">
+          <h3><span class="ms">airwave</span>PLSS CONSUMABLES <span class="push sub">RES 20%</span></h3>
+          <div class="consumable" id="c-o2"><div class="row"><span class="cl">PRIMARY O2</span><span class="val mono">--</span></div><b class="cbar"><i></i><em class="reserve"></em></b><div class="sub mono">--</div></div>
+          <div class="consumable" id="c-h2o"><div class="row"><span class="cl">SUIT COOLING H2O</span><span class="val mono">--</span></div><b class="cbar"><i></i><em class="reserve"></em></b><div class="sub mono">--</div></div>
+          <div class="consumable" id="c-batt"><div class="row"><span class="cl">SUIT BATTERY</span><span class="val mono">--</span></div><b class="cbar"><i></i><em class="reserve"></em></b><div class="sub mono">--</div></div>
+        </section>
+        <section id="panel-dose" class="glass panel">
+          <h3><span class="ms caution-t">radiology</span>RADIATION <span id="d-shield" class="push sub">Shielding: open sky</span></h3>
+          <div class="dose-row"><div><span class="lbl">TOTAL EVA DOSE</span><div><span id="d-total" class="big mono">0.00</span> <span class="unit caution-t">mSv</span></div></div><div class="r"><span class="lbl">FLUX RATE</span><div id="d-rate" class="mono">-- µSv/h</div></div></div>
+          <b class="cbar" id="d-bar"><i></i></b>
+        </section>
+        <section id="panel-drone" class="glass panel">
+          <h3><span class="ms">flight</span>DRONE SCOUT <span id="drone-status" class="push sub accent-t">BATT 100% · DOCKED</span></h3>
+          <div id="drone-pip"><span class="pip-tag">SCOUT-01 <b class="pip-live">[LIVE]</b></span><span class="pip-idle">DOCKED · PRESS [Q] TO LAUNCH</span></div>
+          <div class="row btns"><button id="btn-drone" class="btn-line"><span class="ms">flight_takeoff</span>LAUNCH <kbd>Q</kbd></button><button id="btn-drone-recall" class="btn-line ghost">RECALL</button></div>
+        </section>
+      </aside>
+
+      <!-- bottom left: traverse -->
+      <section id="panel-route" class="glass panel rail">
+        <div class="route-head">
+          <div><span class="lbl">TRAVERSE</span><div id="r-segment" class="accent-t strong mono">--</div></div>
+          <div class="r"><span class="lbl">NEXT TARGET <span id="r-goal"></span></span><div id="r-next" class="ok-g mono">--</div></div>
+        </div>
+        <div class="tiles4">
+          <div class="tile"><span class="lbl">TOTAL DIST</span><span id="r-dist" class="mono">--</span></div>
+          <div class="tile"><span class="lbl">ELEV GAIN</span><span id="r-gain" class="mono">--</span></div>
+          <div class="tile"><span class="lbl">MAX SLOPE</span><span id="r-slope" class="mono">--</span></div>
+          <div class="tile"><span class="lbl">ETA HAB</span><span id="r-eta" class="mono accent-t">--</span></div>
+        </div>
+        <canvas id="r-chart"></canvas>
+        <ul id="r-objectives"></ul>
+      </section>
+
+      <!-- bottom right: tactical map -->
+      <section id="panel-map" class="glass panel rail">
+        <h3><span class="ms">explore</span>TACTICAL MAP <span class="push"></span><button id="btn-plan" class="btn-line sm">PLAN</button><button id="btn-map-expand" class="btn-line sm ghost">EXPAND <kbd>M</kbd></button></h3>
+        <div id="map-layers" class="chips"></div>
+        <canvas id="map-canvas"></canvas>
+      </section>
+
+      <!-- bottom centre: decisions + command bar -->
+      <div id="center-bottom">
+        <div id="wait-banner" class="glass hidden"><span id="wait-text">HOLDING</span><b class="cbar"><i></i></b></div>
+        <div id="sample-prompt" class="glass hidden"><span class="ms ok-g">science</span>SAMPLE SITE · press <kbd>F</kbd> or say "mark sample" to collect</div>
+        <div id="junction-chooser" class="glass hidden">
+          <div id="jc-title">JUNCTION: CHOOSE TRAVERSE</div>
+          <div id="jc-options"></div>
+        </div>
+        <div id="cmd-bar">
+          <button id="btn-voice" class="mic" title="Push to talk [Space]"><span class="ms">mic</span></button>
+          <input id="cmd-input" class="glass" placeholder="Say or type a command: 'toggle radiation', 'reroute', 'mark sample', 'vitals'" />
+          <span id="cmd-feedback" class="mono"></span>
+        </div>
+      </div>
+
+      <div id="hud-chevrons"></div>
+      <div id="reticle"><i></i></div>
+
+      <!-- reroute advisory (full) -->
+      <div id="reroute-banner" class="glass hidden">
+        <div class="rr-head"><span class="ms caution-t">warning</span><span id="rr-title">REROUTE ADVISORY</span><span class="rr-tag">CAUTION · EXERTION THRESHOLD EXCEEDED</span></div>
+        <div id="rr-reason"></div>
+        <table id="rr-compare"></table>
+        <div class="row btns end"><button id="btn-reroute-dismiss" class="btn-line ghost">DISMISS <kbd>X</kbd></button><button id="btn-reroute-accept" class="btn-amber"><span class="ms">check_circle</span>ACCEPT <kbd>R</kbd></button></div>
+      </div>
+
+      <!-- minimal visor mode (Tab) -->
+      <div id="ar-reroute" class="hidden"></div>
+      <div id="ar-vitals" class="glass"></div>
+
+      <div id="controls-hint" class="mono"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · drag look · <kbd>H</kbd> help · <kbd>Tab</kbd> visor</div>
+    </div>
+
+    <!-- incident decision card -->
+    <div id="incident-modal" class="hidden">
+      <div class="card">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <div class="stripe"><span class="sq"></span><span id="inc-category">CATEGORY</span><span class="push lbl">ELAPSED:</span><span id="inc-time" class="mono met-box">MET</span></div>
+        <div class="inc-body-wrap">
+          <div id="inc-advisory" class="lbl sev-t">AUTOMATED THREAT ADVISORY</div>
+          <h2 id="inc-title">TITLE</h2>
+          <p id="inc-body"></p>
+          <div id="inc-impact"></div>
+          <div id="inc-options"></div>
+          <div class="inc-foot">
+            <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="trk" /><circle id="inc-ring" cx="18" cy="18" r="15" class="arc" /></svg><span id="inc-countdown" class="mono">30 s</span></div>
+            <div><div class="strong mono">AUTO-COMMIT TIMEOUT</div><div id="inc-default" class="muted mono small"></div></div>
+            <div class="push hotkeys mono">HOTKEYS: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- expanded map / route planner -->
+    <div id="map-expanded" class="hidden">
+      <div class="mx-panel">
+        <div class="mx-head">
+          <span class="ms accent-t">map</span>
+          <div><div class="mx-title">TACTICAL MAP // TRAVERSE ROUTE PLANNER</div><div class="muted mono small">JEZERO CRATER DELTA FRONT · 4 × 4 km</div></div>
+          <button id="btn-map-close" class="btn-line ghost push">CLOSE <kbd>M</kbd></button>
+        </div>
+        <div class="mx-body">
+          <aside id="map-sidebar">
+            <div class="mx-sec"><span>TACTICAL HUD LAYERS</span></div>
+            <div id="mx-layers" class="chips col"></div>
+            <div id="mx-legend"></div>
+            <div class="mx-sec"><span>TRAVERSE SEQUENCE</span><span id="planner-count"></span></div>
+            <div class="muted mono small">CLICK MAP TO ADD WAYPOINTS (SNAPS TO TRAVERSE NODES)</div>
+            <div id="planner">
+              <ol id="planner-list"></ol>
+              <div id="planner-metrics"></div>
+              <button id="btn-plan-commit" class="btn-cyan wide"><span class="ms">verified</span>COMMIT ROUTE</button>
+              <button id="btn-plan-clear" class="btn-line ghost wide">CLEAR TRAVERSE BUFFER</button>
+            </div>
+          </aside>
+          <div class="mx-main">
+            <canvas id="map-canvas-large"></canvas>
+            <div class="mx-chart"><div class="mx-sec"><span><span class="ms">favorite</span> CONSUMABLES &amp; FATIGUE PROJECTION</span><span>dashed = forecast</span></div><canvas id="planner-chart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- help -->
+    <div id="help" class="hidden">
+      <div class="help-card">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+        <h2><span class="ms accent-t">keyboard</span>HELMET HUD · CONTROLS</h2>
+        <div id="help-keys"></div>
+        <div class="muted small" style="margin-top: 14px">Voice (hold Space) or typed (Enter): "toggle radiation / slope / poi / dust / mag", "reroute", "mark sample", "vitals", "launch drone", "slow pace". Press <kbd>H</kbd> or <kbd>Esc</kbd> to close.</div>
+      </div>
+    </div>
+
+    <div id="toast" class="hidden"></div>
+
+    <!-- ===================== BRIEFING ===================== -->
+    <div id="briefing" class="screen hidden">
+      <div class="brief-wrap">
+        <header class="brief-head">
+          <div class="patch">
+            <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="29" fill="#0b1a24" stroke="#39d0ff" stroke-width="2" /><circle cx="32" cy="32" r="21" fill="none" stroke="#39d0ff" stroke-opacity=".4" stroke-dasharray="3 3" /><circle cx="32" cy="32" r="10" fill="#c96a3a" /><path d="M14 40 Q32 14 50 26" fill="none" stroke="#cff6ff" stroke-width="2" /><circle cx="50" cy="26" r="3" fill="#cff6ff" /></svg>
+            <span>NASA</span>
+          </div>
+          <div class="bh-title">
+            <div class="row"><h1 id="brief-title">EVA-03 · JEZERO CRATER</h1><span class="go-badge"><i class="dot ok"></i>EGRESS READINESS: GO</span></div>
+            <div id="brief-subtitle">Delta Front Sample Traverse</div>
+          </div>
+          <div class="bh-stat"><span class="lbl">MISSION TIMELINE</span><span id="brief-timeline" class="mono strong">T-00:05:00 UNTIL HATCH UNSEAL</span></div>
+          <div class="bh-stat"><span class="lbl">SUIT TELEMETRY BUS</span><span class="mono strong ok-g"><i class="dot ok"></i>PLSS DUAL CHANNEL NOMINAL</span></div>
+        </header>
+        <div class="brief-grid">
+          <section class="bpanel" id="brief-objectives"></section>
+          <section class="bpanel brief-mapwrap"><div class="bp-h"><span><i class="sqd"></i>TRAVERSE OVERVIEW · TOP-DOWN TACTICAL RADAR</span><span class="muted">SYNTHETIC DEM · 4 × 4 km</span></div><canvas id="brief-map"></canvas></section>
+          <section class="bpanel" id="brief-consumables"></section>
+          <section class="bpanel" id="brief-conditions"></section>
+        </div>
+        <footer class="brief-foot">
+          <div class="bf-left">
+            <span id="brief-datasource" class="data-box">DATA SOURCE: SYNTHETIC JEZERO v0</span>
+            <div id="brief-controls"></div>
+          </div>
+          <button id="btn-training" class="link-btn">TRAINING MODE (NO FAILURES)</button>
+          <button id="btn-begin" class="btn-egress">BEGIN EGRESS <span class="ms">arrow_forward</span></button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ===================== DEBRIEF ===================== -->
+    <div id="debrief" class="screen hidden">
+      <div class="debrief-wrap">
+        <header id="debrief-header" class="dpanel">
+          <div>
+            <span id="debrief-tag" class="d-tag">RECOVERY SUCCESSFUL</span>
+            <h1 id="debrief-outcome">EVA COMPLETE</h1>
+            <div id="debrief-sub" class="mono"></div>
+          </div>
+          <div class="row debrief-btns">
+            <button id="btn-export" class="btn-line ghost"><span class="ms">download</span>EXPORT LOG (JSON)</button>
+            <button id="btn-new" class="btn-cyan">NEW EVA <span class="ms">arrow_forward</span></button>
+          </div>
+        </header>
+        <div id="debrief-summary"></div>
+        <div class="debrief-grid">
+          <section class="dpanel" id="debrief-rootcause-wrap"><h3 id="debrief-rc-title"><i class="sqd"></i>NAVIGATOR IMPACT</h3><div id="debrief-rootcause"></div><div id="debrief-impact"></div></section>
+          <section class="dpanel"><h3><i class="sqd"></i>TRAVERSE REPLAY</h3><canvas id="debrief-map"></canvas></section>
+          <section class="dpanel"><h3><i class="sqd"></i>VITALS TIMELINE // AVIONICS TRACE</h3><canvas id="debrief-chart"></canvas></section>
+          <section class="dpanel span3"><h3><i class="sqd"></i>EMERGENCY &amp; DECISION LOG // FLIGHT AUDIT TRAIL</h3><div class="log-wrap"><table id="debrief-log"></table></div></section>
+        </div>
+      </div>
+    </div>
+
+    <div id="loading" class="screen"><div class="loader mono">INITIALISING TACTICAL EVA NAVIGATOR…<br /><span class="muted">building terrain, radiation and route models</span></div></div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
