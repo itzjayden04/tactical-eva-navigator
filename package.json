@@ -1,10 +1,12 @@
 {
-  "name": "mars-eva",
+  "name": "tevan",
   "version": "1.0.0",
-  "description": "",
+  "description": "TEVAN: Tactical EVA Navigator, a Mars EVA helmet navigator (NASA Space Apps 2026)",
   "main": "index.js",
   "scripts": {
+    "predev": "node scripts/copy-mediapipe.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-mediapipe.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run"
@@ -13,6 +15,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.14",
     "three": "^0.169.0"
   },
   "devDependencies": {

@@ -16,7 +16,10 @@ export type Slot =
   | 'alert_emergency'
   | 'reroute_chime'
   | 'sample_collect'
-  | 'ui_click';
+  | 'ui_click'
+  | 'voice_ack'
+  | 'gaze_lock'
+  | 'island_open';
 
 const LOOPS: Slot[] = ['music_bed', 'ambient_wind', 'suit_breathing', 'plss_hum', 'dust_storm', 'spe_geiger', 'drone_rotor'];
 
@@ -36,7 +39,7 @@ export class Audio {
     this.master.gain.value = 0.7;
     this.master.connect(this.ctx.destination);
     await Promise.all(
-      ([...LOOPS, 'alert_caution', 'alert_warning', 'alert_emergency', 'reroute_chime', 'sample_collect', 'ui_click'] as Slot[]).map(async (s) => {
+      ([...LOOPS, 'alert_caution', 'alert_warning', 'alert_emergency', 'reroute_chime', 'sample_collect', 'ui_click', 'voice_ack', 'gaze_lock', 'island_open'] as Slot[]).map(async (s) => {
         try {
           const r = await fetch(`./audio/${s}.mp3`);
           if (!r.ok || !(r.headers.get('content-type') ?? '').includes('audio')) return;
@@ -190,6 +193,11 @@ export class Audio {
       beep(659, 0.12, 0.2);
       beep(784, 0.24, 0.35);
     } else if (slot === 'ui_click') beep(1600, 0, 0.04, 'square', 0.06);
+  }
+
+  setMuted(m: boolean) {
+    if (m !== this.muted) this.toggleMute();
+    return this.muted;
   }
 
   toggleMute() {

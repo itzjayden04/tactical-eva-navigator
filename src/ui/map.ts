@@ -383,4 +383,147 @@ export class TacticalMap {
     ctx.fillText(p.name, x + sz + 3, y);
     ctx.restore();
   }
+
+  /**
+   * Heading-up circular radar for the visor (player at centre). Draws the same
+   * terrain + overlay layers as the full map, so layer toggles show here too.
+   */
+  drawRadar(canvas: HTMLCanvasElement, opts: { t: number; rangeM: number }) {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const size = canvas.clientWidth;
+    if (!size) return;
+    if (canvas.width !== Math.round(size * dpr)) canvas.width = canvas.height = Math.round(size * dpr);
+    const ctx = canvas.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+    const R = size / 2;
+    const k = R / opts.rangeM;
+    const me = this.sim.position();
+    const hd = this.headingRad;
+    const cos = Math.cos(-hd);
+    const sin = Math.sin(-hd);
+    /** world → radar px (heading-up) */
+    const S = (e: number, n: number) => {
+      const dx = (e - me.e) * k;
+      const dy = -(n - me.n) * k;
+      return { x: R + dx * cos - dy * sin, y: R + dx * sin + dy * cos };
+    };
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(R, R, R - 1, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(6,10,14,0.55)';
+    ctx.fillRect(0, 0, size, size);
+    // rasters in a rotated world frame
+    ctx.save();
+    ctx.translate(R, R);
+    ctx.rotate(-hd);
+    ctx.scale(k, k);
+    ctx.translate(-me.e, me.n);
+    const W = this.ext.maxE - this.ext.minE;
+    const H = this.ext.maxN - this.ext.minN;
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(this.base, this.ext.minE, -this.ext.maxN, W, H);
+    ctx.globalAlpha = 0.85;
+    for (const id of ['slope', 'radiation', 'dust', 'mag'] as LayerId[]) if (this.layers[id] && this.images[id]) ctx.drawImage(this.images[id]!.canvas, this.ext.minE, -this.ext.maxN, W, H);
+    ctx.globalAlpha = 1;
+    if (this.layers.fog) {
+      this.updateFog();
+      ctx.drawImage(this.fogCanvas, this.ext.minE, -this.ext.maxN, W, H);
+    }
+    ctx.restore();
+    const line = (pts: { e: number; n: number }[], color: string, width: number, dash: number[] = []) => {
+      if (pts.length < 2) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.lineJoin = ctx.lineCap = 'round';
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const q = S(p.e, p.n);
+        if (i) ctx.lineTo(q.x, q.y);
+        else ctx.moveTo(q.x, q.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    const legPts = (route: Leg[], offset: number) => route.flatMap((leg, i) => this.sim.world.legSamples(leg, i === 0 ? offset : 0));
+    for (const g of this.sim.world.edges.values()) line(legPts([{ edgeId: g.edge.id, forward: true }], 0), 'rgba(235,220,200,0.35)', 1, [2, 3]);
+    line(this.sim.path.map(([e, n]) => ({ e, n })).concat([me]), 'rgba(60,227,154,0.85)', 2);
+    const plan = this.sim.plan;
+    if (plan && this.sim.status === 'active') line(legPts(plan.route, plan.offset), '#39d0ff', 3);
+    const adv = this.sim.advisory;
+    if (adv) line(legPts(adv.altRoute, adv.altOffset), `rgba(255,176,32,${0.55 + 0.45 * Math.sin(opts.t * 6)})`, 3, [6, 4]);
+    // hazards + POIs (upright symbols)
+    for (const p of this.data.pois) {
+      if (!this.sim.discovered.has(p.id)) continue;
+      if (!this.layers.poi && p.kind !== 'hazard') continue;
+      const q = S(p.e, p.n);
+      if (p.kind === 'hazard') {
+        ctx.fillStyle = 'rgba(255,176,32,0.16)';
+        ctx.strokeStyle = 'rgba(255,176,32,0.9)';
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, (p.radius ?? 100) * k, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.fillStyle = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : '#39d0ff';
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    const d = this.sim.drone;
+    if (d.active) {
+      const q = S(d.e, d.n);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, 4, 0, Math.PI * 2);
+      ctx.moveTo(q.x - 7, q.y);
+      ctx.lineTo(q.x + 7, q.y);
+      ctx.moveTo(q.x, q.y - 7);
+      ctx.lineTo(q.x, q.y + 7);
+      ctx.stroke();
+    }
+    const wp = this.sim.nextWaypoint();
+    if (wp) {
+      const q = S(wp.e, wp.n);
+      const dx = q.x - R;
+      const dy = q.y - R;
+      const dd = Math.hypot(dx, dy);
+      const lim = R - 10;
+      const qx = dd > lim ? R + (dx / dd) * lim : q.x;
+      const qy = dd > lim ? R + (dy / dd) * lim : q.y;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(qx, qy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // range ring + north tick
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(R, R, R / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    const nx = R + Math.sin(-hd) * (R - 11);
+    const ny = R - Math.cos(-hd) * (R - 11);
+    ctx.font = '600 10px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText('N', nx, ny);
+    // astronaut (always pointing up)
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(R, R - 8);
+    ctx.lineTo(R + 5.5, R + 6);
+    ctx.lineTo(R, R + 2.5);
+    ctx.lineTo(R - 5.5, R + 6);
+    ctx.closePath();
+    ctx.fill();
+  }
 }

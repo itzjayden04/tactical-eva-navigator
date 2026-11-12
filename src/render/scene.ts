@@ -9,8 +9,12 @@ import type { Sim } from '../core/sim';
 import { fbm } from '../data/mockJezero';
 
 const EYE = 1.75;
-
-export type ViewMode = 'vr' | 'ar';
+/** Base vertical field of view of the helmet visor (degrees) at 1x optical zoom. */
+const BASE_FOV = 64;
+/** Radial lens curvature of the visor (barrel). 0 = flat screen. */
+export const VISOR_K = 0.075;
+export const ZOOM_MIN = 1;
+export const ZOOM_MAX = 6;
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -41,7 +45,14 @@ export class World {
   ref: number;
   yawOffset = 0;
   pitch = -0.05;
-  mode: ViewMode = 'vr';
+  /** optical zoom (scroll wheel); `zoom` eases toward `zoomTarget` */
+  zoom = 1;
+  zoomTarget = 1;
+  private rt: THREE.WebGLRenderTarget;
+  private lens: THREE.Mesh;
+  private lensScene = new THREE.Scene();
+  private lensCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private time = 0;
   private terrain!: THREE.Mesh;
   private worldGroup = new THREE.Group();
   private chevrons: THREE.InstancedMesh;
@@ -66,7 +77,43 @@ export class World {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     container.appendChild(this.renderer.domElement);
-    this.camera = new THREE.PerspectiveCamera(70, container.clientWidth / container.clientHeight, 0.1, 12000);
+    this.camera = new THREE.PerspectiveCamera(BASE_FOV, container.clientWidth / container.clientHeight, 0.1, 12000);
+    // The scene renders into an HDR target; a full-screen "visor lens" pass then bends it
+    // onto the curved helmet visor (barrel curvature + edge chromatic fringe + rim falloff).
+    this.rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
+    this.lens = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.ShaderMaterial({
+        depthTest: false,
+        depthWrite: false,
+        uniforms: { tScene: { value: this.rt.texture }, k: { value: VISOR_K }, aspect: { value: 1 }, time: { value: 0 }, flash: { value: 0 } },
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: `uniform sampler2D tScene; uniform float k; uniform float aspect; uniform float time; uniform float flash; varying vec2 vUv;
+          vec2 warp(vec2 uv, float kk){ vec2 p = uv * 2.0 - 1.0; p.x *= aspect; float r2 = dot(p, p);
+            p *= (1.0 + kk * r2) / (1.0 + kk * aspect * aspect); p.x /= aspect; return p * 0.5 + 0.5; }
+          void main(){
+            vec2 p = vUv * 2.0 - 1.0; p.x *= aspect; float r2 = dot(p, p);
+            float ca = 0.012 * smoothstep(0.6, 3.2, r2);
+            vec3 c;
+            c.r = texture2D(tScene, warp(vUv, k * (1.0 + ca * 6.0))).r;
+            c.g = texture2D(tScene, warp(vUv, k)).g;
+            c.b = texture2D(tScene, warp(vUv, k * (1.0 - ca * 6.0))).b;
+            // visor glass: faint cool tint, curved specular sweep, rim falloff
+            float sweep = exp(-pow((vUv.x * 0.8 + vUv.y * 1.1 - 1.32) * 7.0, 2.0)) * smoothstep(0.35, 1.0, vUv.y);
+            c += vec3(0.9, 0.95, 1.0) * sweep * 0.035;
+            vec2 q = vec2((vUv.x - 0.5) / 0.56, (vUv.y - 0.47) / 0.6);
+            float rim = smoothstep(0.78, 1.22, length(q));
+            c *= 1.0 - rim * 0.88;
+            c = mix(c, c * vec3(0.96, 0.99, 1.04), 0.5);
+            c += vec3(1.0, 0.25, 0.2) * flash * rim;
+            gl_FragColor = vec4(c, 1.0);
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }`,
+      }),
+    );
+    this.lens.frustumCulled = false;
+    this.lensScene.add(this.lens);
     this.droneCam = new THREE.PerspectiveCamera(60, 16 / 9, 0.5, 12000);
     this.fog = new THREE.FogExp2(this.skyColor.getHex(), 0.00028);
     this.scene.fog = this.fog;
@@ -336,21 +383,48 @@ export class World {
     }
   }
 
-  setMode(mode: ViewMode) {
-    this.mode = mode;
-    this.worldGroup.visible = mode === 'vr';
-    this.sky.visible = mode === 'vr';
-    this.dust.visible = mode === 'vr';
-    this.scene.fog = mode === 'vr' ? this.fog : null;
-    this.renderer.setClearColor(0x000000, mode === 'vr' ? 1 : 0);
-  }
-
   resize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
     this.renderer.setSize(w, h);
+    const pr = this.renderer.getPixelRatio();
+    this.rt.setSize(Math.round(w * pr), Math.round(h * pr));
+    (this.lens.material as THREE.ShaderMaterial).uniforms.aspect.value = w / h;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Multiply the optical zoom (scroll wheel). Returns the new target. */
+  zoomBy(f: number) {
+    this.zoomTarget = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this.zoomTarget * f));
+    if (this.zoomTarget < 1.04) this.zoomTarget = 1;
+    return this.zoomTarget;
+  }
+  setZoom(z: number) {
+    this.zoomTarget = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    return this.zoomTarget;
+  }
+  /** Red rim pulse on the visor glass for alerts (0..1). */
+  set alertFlash(v: number) {
+    (this.lens.material as THREE.ShaderMaterial).uniforms.flash.value = v;
+  }
+
+  /** Map an undistorted screen point (px) to where it appears on the curved visor (px). */
+  toVisor(x: number, y: number) {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const a = w / h;
+    const k = VISOR_K;
+    const sx = ((x / w) * 2 - 1) * a;
+    const sy = 1 - (y / h) * 2;
+    const rs = Math.hypot(sx, sy);
+    if (rs < 1e-6) return { x, y };
+    // solve r (1 + k r^2) / (1 + k a^2) = rs  (Newton)
+    const target = rs * (1 + k * a * a);
+    let r = rs;
+    for (let i = 0; i < 6; i++) r -= (r + k * r * r * r - target) / (1 + 3 * k * r * r);
+    const f = r / rs;
+    return { x: ((sx * f) / a + 1) * 0.5 * w, y: (1 - sy * f) * 0.5 * h };
   }
 
   /** Project world (e,n,up) to screen pixels. */
@@ -360,7 +434,8 @@ export class World {
     v.project(this.camera);
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    return { x: ((v.x + 1) / 2) * w, y: ((1 - v.y) / 2) * h, visible: v.z < 1 && v.z > -1, dist };
+    const o = this.toVisor(((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h);
+    return { x: o.x, y: o.y, visible: v.z < 1 && v.z > -1, dist };
   }
 
   heading() {
@@ -373,6 +448,14 @@ export class World {
     const p = sim.position();
     const moving = sim.isMoving();
     this.yaw = sim.lookYaw;
+    this.time += dt;
+    this.zoom += (this.zoomTarget - this.zoom) * Math.min(1, dt * 10);
+    if (Math.abs(this.zoom - this.zoomTarget) < 1e-3) this.zoom = this.zoomTarget;
+    const fov = (2 * Math.atan(Math.tan((BASE_FOV * Math.PI) / 360) / this.zoom) * 180) / Math.PI;
+    if (Math.abs(fov - this.camera.fov) > 1e-3) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
     if (moving) this.bob += dt * 7;
     const eyeY = this.y(p.e, p.n) + EYE + (moving ? Math.sin(this.bob) * 0.04 : 0);
     this.camera.position.set(p.e, eyeY, -p.n);
@@ -458,18 +541,17 @@ export class World {
     const r = this.renderer;
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    r.setViewport(0, 0, w, h);
+    if (this.rt.width < 8) this.resize();
     r.setScissorTest(false);
+    r.setRenderTarget(this.rt);
     r.render(this.scene, this.camera);
+    r.setRenderTarget(null);
+    r.setViewport(0, 0, w, h);
+    (this.lens.material as THREE.ShaderMaterial).uniforms.time.value = this.time;
+    r.render(this.lensScene, this.lensCam);
     if (pipEl && this.sim.drone.active) {
       this.pipFrame = (this.pipFrame + 1) % 3;
       if (this.pipFrame !== 0) return;
-      const ar = this.mode === 'ar';
-      if (ar) {
-        this.worldGroup.visible = true;
-        this.sky.visible = true;
-        this.scene.fog = this.fog;
-      }
       const PW = 320;
       const PH = 180;
       if (!this.pipTarget) this.pipTarget = new THREE.WebGLRenderTarget(PW, PH);
@@ -483,11 +565,6 @@ export class World {
       r.setRenderTarget(null);
       this.drone.visible = true;
       this.sky.position.copy(skyPos);
-      if (ar) {
-        this.worldGroup.visible = false;
-        this.sky.visible = false;
-        this.scene.fog = null;
-      }
       const buf = new Uint8Array(PW * PH * 4);
       r.readRenderTargetPixels(this.pipTarget, 0, 0, PW, PH, buf);
       let cv = pipEl.querySelector('canvas');
