@@ -82,6 +82,34 @@ Choose either option.
 - **Connect the repo:** on app.netlify.com choose *Add new site → Import from Git → tactical-eva-navigator*. The settings come from `netlify.toml` (build `npm run build`, publish `dist`).
 - **Drag and drop:** run `npm run build` locally, then drag the `dist/` folder onto https://app.netlify.com/drop.
 
+## What's new in v3: real NASA data
+
+TEVAN now walks you across **real Jezero Crater**, not a procedural stand-in.
+
+| What you see | Real source |
+|---|---|
+| Terrain under your boots, slopes, the delta scarp on the horizon, the Kodiak butte | HiRISE 1 m/px digital terrain model from the Mars 2020 Terrain Relative Navigation maps (NASA/JPL-Caltech, University of Arizona, USGS Astrogeology) |
+| Ground texture in the visor and the map base | HiRISE 25 cm/px orthomosaic from the same set, the imagery NASA Mars Trek and the USGS Astrogeology hub serve |
+| The blue route on the map and the wheel tracks in the visor | Perseverance's actual traverse, sols 13 to 760, from NASA/JPL's MMGIS service |
+| "Rover feed" tool and the photos in "what is this" | NASA's live Mars 2020 raw-image feed (mars.nasa.gov/mars2020/multimedia/raw-images) |
+| Rock roughness, terrain radiation shielding, dust | Computed from the real DTM and orthophoto |
+
+- **Where you are:** a 4 × 4 km window around the **Octavia E. Butler landing site** (18.4446° N, 77.4509° E). The habitat sits where Perseverance touched down on 18 Feb 2021. Sample 1 is at the northern margin of Séítah, sample 2 at the western delta front, and the relay point is on top of the delta.
+- **Look at the ground Perseverance drove over and say "what is this".** TEVAN tells you the sol it passed and shows the rover's own Navcam frames from that sol, fetched live from NASA.
+- **Say "rover feed"** (or "latest rover images") for Perseverance's newest raw images.
+- **"Where am I"** now answers in latitude and longitude.
+- **Map layer "rover route"** toggles Perseverance's traverse ("show rover layer").
+- **Artemis-era visor style:** Earth-blue primary, signal-red alarms, condensed display type. Colours and type only; no NASA or Artemis logos are used.
+- `?data=mock` still loads the synthetic terrain, and TEVAN falls back to it automatically if the NASA files can't load.
+- NASA Worldview was checked too, but it covers Earth only, so it isn't used.
+
+The dataset in `public/data/nasa-jezero/` (about 6.5 MB) is built by one command that reads only the needed window of the multi-gigabyte mosaics over HTTP:
+
+```bash
+pip install rasterio numpy scipy scikit-image pillow
+python tools/fetch_nasa_jezero.py          # writes public/data/nasa-jezero/
+```
+
 ## What's new in v2
 
 **An active guardian, not a passive display.** TEVAN watches the astronaut and the terrain and acts:
@@ -134,7 +162,7 @@ Choose either option.
 ### Voice commands
 
 - **Gaze-targeted:** "launch this (feature)", "check this feature's progress"
-- **Layers:** "show / hide / toggle radiation · slope · POI · dust · magnetic · fog"
+- **Layers:** "show / hide / toggle radiation · slope · POI · dust · magnetic · fog · rover"
 - **Route:** "reroute", "accept", "dismiss", "open map", "commit route", "clear route", "close"
 - **Decisions:** "option one / two / three", "route two", "take route one"
 - **Suit:** "vitals", "check oxygen", "battery status", "how is my fatigue", "slow pace"
@@ -142,7 +170,7 @@ Choose either option.
 - **Science:** "mark sample"
 - **Emergency:** "call for help" / "mayday", "back to habitat", "nearest shelter", "go to cache", "resupply", "rest", "stability on / off", "resume mission", "cancel navigation"
 - **Look and ask:** "what is this", "label this (as hazard / teammate / destination / …)", "remove tag", "go to tag", "take me to my teammate"
-- **Tools:** "tools", "team status", "show supplies", "system status", "how is the weather", "show tags", "show log", "take a photo", "where am I"
+- **Tools:** "tools", "team status", "show supplies", "system status", "how is the weather", "show tags", "show log", "take a photo", "where am I", "rover feed"
 - **Traceability:** "repeat that", "undo"
 - **Visor:** "zoom in / out", "reset zoom", "calibrate", "voice check", "mute", "stop listening" / "resume listening", "jump"
 - You can start any command with "TEVAN", e.g. "Hey TEVAN, show radiation".
@@ -194,13 +222,16 @@ src/
   ui/gaze.ts       MediaPipe face/iris tracking, calibration, smoothing
   ui/targets.ts    gaze → feature targeting
   ui/audio.ts      named sound slots (see AUDIO.md)
-tools/convert_geotiff.py   NASA GeoTIFF → simulator grids
+  data/roverFeed.ts  live Perseverance raw images (NASA JSON API)
+tools/fetch_nasa_jezero.py  builds the real Jezero dataset from NASA/USGS sources
+tools/convert_geotiff.py   any other NASA GeoTIFF → simulator grids
 ```
 
-### Swapping in NASA data (14 Nov)
+### Data sets
 
-1. Convert the rasters: `python tools/convert_geotiff.py --out public/data/nasa-jezero --elevation dtm.tif ...`
-2. Open `/?data=nasa-jezero`. Missing layers fall back to synthetic ones.
+- Default: `public/data/nasa-jezero/` (real, see "What's new in v3").
+- `/?data=mock`: the synthetic terrain.
+- Another GeoTIFF: `python tools/convert_geotiff.py --out public/data/<name> --elevation dtm.tif ...`, then open `/?data=<name>`. Missing layers fall back to synthetic ones.
 
 ### Health model
 

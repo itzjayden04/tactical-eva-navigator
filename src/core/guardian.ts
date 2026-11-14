@@ -9,6 +9,7 @@
  * and the undo stack. Framework-free, so the same logic runs in the tests.
  */
 import type { IncidentDef, Poi } from '../data/types';
+import { toLatLon } from '../data/types';
 import type { Sim } from './sim';
 import type { Obstacle } from './terrain';
 import { RESERVE_FRAC } from './health';
@@ -81,6 +82,20 @@ export interface Card {
   bar?: number;
   rows: [string, string, string?][];
   speech: string;
+  /** Perseverance drove within ~30 m of this spot on this sol (real data only) */
+  roverSol?: number;
+}
+
+/** nearest point of Perseverance's real route, if within `max` metres */
+export function roverNear(sim: Sim, e: number, n: number, max = 30): { sol: number; d: number } | null {
+  const t = sim.data.traverse;
+  if (!t) return null;
+  let best: { sol: number; d: number } | null = null;
+  for (const [pe, pn, sol] of t.points) {
+    const d = Math.hypot(pe - e, pn - n);
+    if (d < max && (!best || d < best.d)) best = { sol, d };
+  }
+  return best;
 }
 
 const COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
@@ -687,13 +702,16 @@ export class Guardian {
         break;
       }
     }
+    const rv = roverNear(sim, p.e, p.n);
+    const ll = sim.data.geo ? toLatLon(sim.data.geo, p.e, p.n) : null;
     return {
       icon: 'terrain',
       title: surface,
+      roverSol: rv?.sol,
       big: `${sl.toFixed(0)}°`,
       band: footing === 'Good' ? 'ok' : footing === 'Fair' ? 'caution' : 'warning',
-      rows: [['Footing', footing, footing === 'Good' ? 'ok' : footing === 'Fair' ? 'caution' : 'warning'], ['Distance', where], ['Height vs you', `${dh >= 0 ? '+' : ''}${dh.toFixed(0)} m`], ['Dose rate there', `${dose.toFixed(0)} µSv/h`], ...(trav ? ([['Traverse', trav]] as [string, string][]) : []), ...(hz ? ([['Hazard zone', hz.name, 'caution']] as [string, string, string][]) : []), ...tagRow],
-      speech: `${surface}, ${whereSay}. Slope ${sl.toFixed(0)} degrees, footing ${footing.toLowerCase()}.${trav ? ` It is on the ${trav}.` : ''}${hz ? ` Inside the ${hz.name} hazard zone.` : ''} Say “label this” to tag it.`,
+      rows: [['Footing', footing, footing === 'Good' ? 'ok' : footing === 'Fair' ? 'caution' : 'warning'], ['Distance', where], ['Height vs you', `${dh >= 0 ? '+' : ''}${dh.toFixed(0)} m`], ['Dose rate there', `${dose.toFixed(0)} µSv/h`], ...(trav ? ([['Traverse', trav]] as [string, string][]) : []), ...(hz ? ([['Hazard zone', hz.name, 'caution']] as [string, string, string][]) : []), ...(rv ? ([['Perseverance', `Drove here on sol ${rv.sol}`, 'ok']] as [string, string, string][]) : []), ...(ll ? ([['Lat / lon', `${ll.lat.toFixed(4)}° N  ${ll.lon.toFixed(4)}° E`]] as [string, string][]) : []), ...tagRow],
+      speech: `${surface}, ${whereSay}. Slope ${sl.toFixed(0)} degrees, footing ${footing.toLowerCase()}.${trav ? ` It is on the ${trav}.` : ''}${hz ? ` Inside the ${hz.name} hazard zone.` : ''}${rv ? ` NASA's Perseverance rover drove here on sol ${rv.sol}. Pulling up its camera images from that sol.` : ''} Say “label this” to tag it.`,
     };
   }
 

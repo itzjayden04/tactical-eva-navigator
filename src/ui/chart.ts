@@ -16,7 +16,7 @@ export interface ChartInput {
   large?: boolean;
 }
 
-const COL = { o2: '#39d0ff', fatigue: '#ffb020', batt: '#3ce39a', dose: '#ff7ad9' };
+const COL = { o2: '#27aae1', fatigue: '#ffb020', batt: '#3ce39a', dose: '#ff7ad9' };
 
 export function drawChart(canvas: HTMLCanvasElement, inp: ChartInput) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);

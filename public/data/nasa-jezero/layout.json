@@ -1,0 +1,892 @@
+{
+ "nodes": [
+  {
+   "id": "HAB",
+   "name": "Habitat \u00b7 OEB Landing Site",
+   "e": 1200,
+   "n": -400,
+   "poiId": "hab"
+  },
+  {
+   "id": "JA",
+   "name": "Junction Alpha",
+   "e": 1150,
+   "n": -900
+  },
+  {
+   "id": "S1",
+   "name": "S\u00e9\u00edtah Margin Outcrop",
+   "e": 650,
+   "n": -1120,
+   "poiId": "s1"
+  },
+  {
+   "id": "SH",
+   "name": "Crater Wall Shelter",
+   "e": 560,
+   "n": 330,
+   "poiId": "shelter"
+  },
+  {
+   "id": "JB",
+   "name": "Junction Bravo",
+   "e": -250,
+   "n": 420
+  },
+  {
+   "id": "S2",
+   "name": "Delta Front Outcrop",
+   "e": -1250,
+   "n": 280,
+   "poiId": "s2"
+  },
+  {
+   "id": "CR",
+   "name": "Delta Top Relay Point",
+   "e": -500,
+   "n": 900,
+   "poiId": "relay"
+  }
+ ],
+ "edges": [
+  {
+   "id": "E1",
+   "name": "Egress Path",
+   "a": "HAB",
+   "b": "JA",
+   "via": [
+    [
+     1188.0,
+     -548.0
+    ],
+    [
+     1136.0,
+     -636.0
+    ]
+   ],
+   "surface": "regolith",
+   "description": "Beside Perseverance's first drive south"
+  },
+  {
+   "id": "E2",
+   "name": "S\u00e9\u00edtah Ridge Traverse",
+   "a": "JA",
+   "b": "S1",
+   "via": [
+    [
+     1136.0,
+     -1026.0
+    ],
+    [
+     1104.0,
+     -1066.0
+    ],
+    [
+     1010.0,
+     -1118.0
+    ],
+    [
+     1000.0,
+     -1138.0
+    ],
+    [
+     1000.0,
+     -1188.0
+    ],
+    [
+     978.0,
+     -1210.0
+    ],
+    [
+     954.0,
+     -1250.0
+    ],
+    [
+     866.0,
+     -1262.0
+    ],
+    [
+     822.0,
+     -1226.0
+    ],
+    [
+     714.0,
+     -1204.0
+    ]
+   ],
+   "surface": "boulders",
+   "description": "Firm footing but crosses rough ridged bedrock"
+  },
+  {
+   "id": "E3",
+   "name": "Ripple Field Shortcut",
+   "a": "JA",
+   "b": "S1",
+   "via": [],
+   "surface": "soft_sand",
+   "description": "Shorter and flat, but across aeolian ripples"
+  },
+  {
+   "id": "E4",
+   "name": "Crater Approach",
+   "a": "JA",
+   "b": "SH",
+   "via": [
+    [
+     1152.0,
+     -810.0
+    ],
+    [
+     1132.0,
+     -660.0
+    ],
+    [
+     1100.0,
+     -622.0
+    ],
+    [
+     1090.0,
+     -564.0
+    ],
+    [
+     1038.0,
+     -512.0
+    ],
+    [
+     1040.0,
+     -456.0
+    ],
+    [
+     1020.0,
+     -342.0
+    ],
+    [
+     932.0,
+     -228.0
+    ],
+    [
+     860.0,
+     -132.0
+    ],
+    [
+     840.0,
+     -88.0
+    ],
+    [
+     838.0,
+     -30.0
+    ],
+    [
+     696.0,
+     104.0
+    ],
+    [
+     678.0,
+     136.0
+    ],
+    [
+     668.0,
+     204.0
+    ]
+   ],
+   "surface": "regolith"
+  },
+  {
+   "id": "E5",
+   "name": "Floor Trail",
+   "a": "S1",
+   "b": "SH",
+   "via": [
+    [
+     648.0,
+     -1092.0
+    ],
+    [
+     630.0,
+     -1064.0
+    ],
+    [
+     626.0,
+     -1004.0
+    ],
+    [
+     604.0,
+     -974.0
+    ],
+    [
+     604.0,
+     -920.0
+    ],
+    [
+     588.0,
+     -878.0
+    ],
+    [
+     592.0,
+     -826.0
+    ],
+    [
+     494.0,
+     -718.0
+    ],
+    [
+     480.0,
+     -666.0
+    ],
+    [
+     404.0,
+     -590.0
+    ],
+    [
+     398.0,
+     -476.0
+    ],
+    [
+     400.0,
+     -454.0
+    ],
+    [
+     420.0,
+     -428.0
+    ],
+    [
+     420.0,
+     -404.0
+    ],
+    [
+     404.0,
+     -366.0
+    ],
+    [
+     350.0,
+     -312.0
+    ],
+    [
+     352.0,
+     -108.0
+    ],
+    [
+     418.0,
+     -48.0
+    ],
+    [
+     464.0,
+     22.0
+    ],
+    [
+     478.0,
+     190.0
+    ],
+    [
+     558.0,
+     280.0
+    ]
+   ],
+   "surface": "regolith"
+  },
+  {
+   "id": "E6",
+   "name": "Western Floor",
+   "a": "S1",
+   "b": "JB",
+   "via": [
+    [
+     648.0,
+     -1092.0
+    ],
+    [
+     630.0,
+     -1064.0
+    ],
+    [
+     626.0,
+     -1004.0
+    ],
+    [
+     604.0,
+     -974.0
+    ],
+    [
+     600.0,
+     -910.0
+    ],
+    [
+     474.0,
+     -790.0
+    ],
+    [
+     450.0,
+     -758.0
+    ],
+    [
+     450.0,
+     -730.0
+    ],
+    [
+     392.0,
+     -674.0
+    ],
+    [
+     280.0,
+     -638.0
+    ],
+    [
+     246.0,
+     -586.0
+    ],
+    [
+     198.0,
+     -576.0
+    ],
+    [
+     172.0,
+     -550.0
+    ],
+    [
+     140.0,
+     -474.0
+    ],
+    [
+     86.0,
+     -420.0
+    ],
+    [
+     54.0,
+     -420.0
+    ],
+    [
+     24.0,
+     -386.0
+    ],
+    [
+     24.0,
+     -330.0
+    ],
+    [
+     -54.0,
+     -192.0
+    ],
+    [
+     -76.0,
+     -94.0
+    ],
+    [
+     -74.0,
+     -14.0
+    ],
+    [
+     -94.0,
+     94.0
+    ],
+    [
+     -124.0,
+     124.0
+    ],
+    [
+     -132.0,
+     174.0
+    ],
+    [
+     -198.0,
+     274.0
+    ],
+    [
+     -198.0,
+     306.0
+    ],
+    [
+     -220.0,
+     328.0
+    ],
+    [
+     -220.0,
+     358.0
+    ]
+   ],
+   "surface": "regolith"
+  },
+  {
+   "id": "E7",
+   "name": "Northern Plains",
+   "a": "SH",
+   "b": "JB",
+   "via": [
+    [
+     494.0,
+     314.0
+    ],
+    [
+     304.0,
+     314.0
+    ],
+    [
+     264.0,
+     334.0
+    ],
+    [
+     212.0,
+     334.0
+    ],
+    [
+     188.0,
+     352.0
+    ],
+    [
+     150.0,
+     352.0
+    ],
+    [
+     126.0,
+     376.0
+    ],
+    [
+     36.0,
+     410.0
+    ]
+   ],
+   "surface": "regolith"
+  },
+  {
+   "id": "E8",
+   "name": "Scarp Toe Direct",
+   "a": "JB",
+   "b": "S2",
+   "via": [
+    [
+     -760.0,
+     520.0
+    ]
+   ],
+   "surface": "slope_scree",
+   "description": "Direct, steep, along the delta scarp toe"
+  },
+  {
+   "id": "E9",
+   "name": "Perseverance Track",
+   "a": "JB",
+   "b": "S2",
+   "via": [
+    [
+     -304.0,
+     370.0
+    ],
+    [
+     -352.0,
+     354.0
+    ],
+    [
+     -398.0,
+     308.0
+    ],
+    [
+     -436.0,
+     294.0
+    ],
+    [
+     -512.0,
+     294.0
+    ],
+    [
+     -660.0,
+     192.0
+    ],
+    [
+     -810.0,
+     188.0
+    ],
+    [
+     -854.0,
+     200.0
+    ],
+    [
+     -912.0,
+     258.0
+    ],
+    [
+     -1148.0,
+     260.0
+    ],
+    [
+     -1216.0,
+     250.0
+    ]
+   ],
+   "surface": "regolith",
+   "description": "Along the rover's own route to the delta front: longer, gentle"
+  },
+  {
+   "id": "E10",
+   "name": "Southern Return",
+   "a": "S2",
+   "b": "HAB",
+   "via": [
+    [
+     -1238.0,
+     158.0
+    ],
+    [
+     -1102.0,
+     4.0
+    ],
+    [
+     -826.0,
+     -260.0
+    ],
+    [
+     -800.0,
+     -250.0
+    ],
+    [
+     -768.0,
+     -306.0
+    ],
+    [
+     -752.0,
+     -408.0
+    ],
+    [
+     -676.0,
+     -480.0
+    ],
+    [
+     -646.0,
+     -486.0
+    ],
+    [
+     -614.0,
+     -518.0
+    ],
+    [
+     -592.0,
+     -518.0
+    ],
+    [
+     -560.0,
+     -550.0
+    ],
+    [
+     -284.0,
+     -548.0
+    ],
+    [
+     -162.0,
+     -546.0
+    ],
+    [
+     -46.0,
+     -660.0
+    ],
+    [
+     -42.0,
+     -692.0
+    ],
+    [
+     18.0,
+     -692.0
+    ],
+    [
+     78.0,
+     -704.0
+    ],
+    [
+     210.0,
+     -702.0
+    ],
+    [
+     252.0,
+     -670.0
+    ],
+    [
+     398.0,
+     -670.0
+    ],
+    [
+     434.0,
+     -652.0
+    ],
+    [
+     466.0,
+     -652.0
+    ],
+    [
+     486.0,
+     -672.0
+    ],
+    [
+     542.0,
+     -690.0
+    ],
+    [
+     588.0,
+     -690.0
+    ],
+    [
+     612.0,
+     -714.0
+    ],
+    [
+     700.0,
+     -720.0
+    ],
+    [
+     784.0,
+     -710.0
+    ],
+    [
+     868.0,
+     -622.0
+    ],
+    [
+     902.0,
+     -616.0
+    ],
+    [
+     988.0,
+     -530.0
+    ],
+    [
+     1044.0,
+     -496.0
+    ],
+    [
+     1120.0,
+     -490.0
+    ],
+    [
+     1190.0,
+     -426.0
+    ]
+   ],
+   "surface": "regolith",
+   "description": "Long walk home across the crater floor"
+  },
+  {
+   "id": "E11",
+   "name": "Delta Climb",
+   "a": "JB",
+   "b": "CR",
+   "via": [
+    [
+     -366.0,
+     414.0
+    ],
+    [
+     -438.0,
+     422.0
+    ],
+    [
+     -484.0,
+     456.0
+    ],
+    [
+     -488.0,
+     480.0
+    ],
+    [
+     -578.0,
+     590.0
+    ],
+    [
+     -588.0,
+     670.0
+    ],
+    [
+     -550.0,
+     708.0
+    ],
+    [
+     -550.0,
+     742.0
+    ],
+    [
+     -524.0,
+     768.0
+    ]
+   ],
+   "surface": "slope_scree",
+   "description": "Climbs ~70 m onto the delta top"
+  },
+  {
+   "id": "E12",
+   "name": "Relay Descent",
+   "a": "CR",
+   "b": "SH",
+   "via": [
+    [
+     -440.0,
+     900.0
+    ],
+    [
+     -382.0,
+     952.0
+    ],
+    [
+     -324.0,
+     952.0
+    ],
+    [
+     -250.0,
+     878.0
+    ],
+    [
+     -180.0,
+     868.0
+    ],
+    [
+     -156.0,
+     850.0
+    ],
+    [
+     -120.0,
+     848.0
+    ],
+    [
+     -84.0,
+     868.0
+    ],
+    [
+     -16.0,
+     868.0
+    ],
+    [
+     188.0,
+     846.0
+    ],
+    [
+     300.0,
+     750.0
+    ],
+    [
+     300.0,
+     652.0
+    ],
+    [
+     314.0,
+     572.0
+    ],
+    [
+     330.0,
+     526.0
+    ],
+    [
+     364.0,
+     484.0
+    ],
+    [
+     366.0,
+     436.0
+    ],
+    [
+     384.0,
+     418.0
+    ],
+    [
+     390.0,
+     374.0
+    ],
+    [
+     450.0,
+     314.0
+    ]
+   ],
+   "surface": "regolith"
+  }
+ ],
+ "pois": [
+  {
+   "id": "hab",
+   "kind": "habitat",
+   "name": "Habitat",
+   "e": 1200,
+   "n": -400,
+   "shielding": 0.02,
+   "radius": 12,
+   "note": "Pressurised habitat at the Octavia E. Butler landing site (Perseverance touchdown, 18 Feb 2021)"
+  },
+  {
+   "id": "s1",
+   "kind": "sample",
+   "name": "S\u00e9\u00edtah Margin Outcrop",
+   "e": 650,
+   "n": -1120,
+   "note": "Olivine-rich igneous bedrock at the northern edge of S\u00e9\u00edtah, where Perseverance cored its early samples"
+  },
+  {
+   "id": "s2",
+   "kind": "sample",
+   "name": "Delta Front Outcrop",
+   "e": -1250,
+   "n": 280,
+   "note": "Layered fluvial-deltaic sediments at the base of the western delta front"
+  },
+  {
+   "id": "shelter",
+   "kind": "shelter",
+   "name": "Crater Wall Shelter",
+   "e": 560,
+   "n": 330,
+   "shielding": 0.35,
+   "radius": 45,
+   "note": "Inner wall of a ~150 m impact crater blocks part of the sky"
+  },
+  {
+   "id": "relay",
+   "kind": "comms",
+   "name": "Delta Top Relay Point",
+   "e": -500,
+   "n": 900,
+   "note": "~70 m above the floor: line of sight to the habitat and orbiters"
+  },
+  {
+   "id": "cache-a",
+   "kind": "cache",
+   "name": "Supply Cache Alpha",
+   "e": 590,
+   "n": 300,
+   "note": "Pre-placed O2, water and battery pack at the shelter"
+  },
+  {
+   "id": "cache-b",
+   "kind": "cache",
+   "name": "Supply Cache Bravo",
+   "e": -230,
+   "n": 395,
+   "note": "Pre-placed O2, water and battery pack at Junction Bravo"
+  },
+  {
+   "id": "kodiak",
+   "kind": "landmark",
+   "name": "Kodiak",
+   "e": -1200,
+   "n": -800,
+   "note": "Isolated butte, an erosional remnant of the delta, ~60 m tall"
+  },
+  {
+   "id": "hz-boulder",
+   "kind": "hazard",
+   "name": "S\u00e9\u00edtah Ridges",
+   "e": 900,
+   "n": -1220,
+   "radius": 200,
+   "note": "Rough ridged bedrock: slip and trip risk"
+  },
+  {
+   "id": "hz-sand",
+   "kind": "hazard",
+   "name": "Ripple Field",
+   "e": 880,
+   "n": -1000,
+   "radius": 120,
+   "note": "Aeolian ripples: high sinkage"
+  },
+  {
+   "id": "hz-rim",
+   "kind": "hazard",
+   "name": "Delta Scarp Scree",
+   "e": -760,
+   "n": 560,
+   "radius": 220,
+   "note": "Loose debris below the delta scarp, slopes over 25\u00b0"
+  }
+ ]
+}

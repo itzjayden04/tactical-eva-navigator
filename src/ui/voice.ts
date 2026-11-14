@@ -8,8 +8,8 @@
  */
 export type FeatureId = 'mission' | 'o2' | 'h2o' | 'power' | 'dose' | 'fatigue' | 'map' | 'route' | 'drone' | 'sample' | 'layers';
 export type TagWord = 'teammate' | 'habitat' | 'destination' | 'hazard' | 'sample' | 'resource' | 'note';
-export type ToolId = 'tools' | 'team' | 'supplies' | 'systems' | 'weather' | 'tags' | 'log' | 'emergency';
-export type LayerWord = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog';
+export type ToolId = 'tools' | 'team' | 'supplies' | 'systems' | 'weather' | 'tags' | 'log' | 'emergency' | 'rover';
+export type LayerWord = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog' | 'rover';
 
 export type Command =
   | { type: 'launchThis' }
@@ -59,6 +59,7 @@ const LAYER_WORDS: [RegExp, LayerWord][] = [
   [/\b(dust)\b/, 'dust'],
   [/\b(magnetic|mag|field)\b/, 'mag'],
   [/\b(fog|unexplored)\b/, 'fog'],
+  [/\b(rover|perseverance|traverse)\b/, 'rover'],
 ];
 
 const FEATURE_WORDS: [RegExp, FeatureId][] = [
@@ -165,6 +166,7 @@ export function parseCommand(text: string, aliases: string[] = []): Command | nu
   if (/^(weather|forecast|space weather|conditions|weather report)$/.test(t) || has(/\b(check|show|whats|what is|hows|how is|any) (the )?(weather|forecast|space weather|conditions|storms?)\b|\bstorm (status|update)\b/)) return { type: 'tool', tool: 'weather' };
   if (has(/\b(show|list|my|open) tags\b/) || t === 'tags') return { type: 'tool', tool: 'tags' };
   if (/^(tools|apps|menu|toolbox|more|all features|open tools|show tools)$/.test(t)) return { type: 'tool', tool: 'tools' };
+  if (has(/\b(rover|perseverance) (feed|images?|photos?|pictures?|cameras?|raw images?)\b|\b(latest|newest|new) (rover |perseverance |mars )?(images|photos|pictures)\b|\bwhat (is|has) (the )?(rover|perseverance) (seeing|seen|doing)\b/) || /^(rover feed|rover|perseverance)$/.test(t)) return { type: 'tool', tool: 'rover' };
 
   // gaze-targeted ("deictic") commands: "launch this feature", "check this feature's progress"
   if (deictic && has(/\b(progress|status|state|check|how is|hows|report)\b/)) return { type: 'progressThis' };

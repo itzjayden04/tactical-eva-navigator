@@ -168,4 +168,55 @@ export interface DataBundle {
   pois: Poi[];
   mission: MissionDef;
   conditions: Conditions;
+  /** 'nasa' when the terrain comes from real NASA data, 'synthetic' for the procedural stand-in */
+  source?: 'nasa' | 'synthetic';
+  /** orthophoto draped over the terrain and used as the map base (real data only) */
+  imagery?: Imagery;
+  /** Perseverance's real route through the study area */
+  traverse?: Traverse;
+  /** georeference of the local frame, for lat/lon readouts */
+  geo?: GeoRef;
+  /** attribution lines for the data in use */
+  credits?: string[];
+}
+
+export interface Imagery {
+  url: string;
+  mapUrl: string;
+  originE: number; // west edge (m)
+  originN: number; // north edge (m)
+  sizeE: number;
+  sizeN: number;
+}
+
+export interface RoverWaypoint {
+  sol: number;
+  e: number;
+  n: number;
+  elev: number;
+  /** Navcam/Mastcam panorama taken at this stop, if any */
+  pano: string | null;
+}
+
+export interface Traverse {
+  /** [e, n, sol] polyline */
+  points: [number, number, number][];
+  waypoints: RoverWaypoint[];
+}
+
+export interface GeoRef {
+  lat0: number; // latitude of the local reference point (deg)
+  lon0: number; // east longitude (deg)
+  /** local (e,n) of the reference point */
+  offsetE: number;
+  offsetN: number;
+  radius: number; // m
+}
+
+/** local metres → planetocentric lat / east lon (equirectangular approximation, fine over a few km) */
+export function toLatLon(g: GeoRef, e: number, n: number) {
+  const k = Math.PI / 180;
+  const lat = g.lat0 + (n - g.offsetN) / (g.radius * k);
+  const lon = g.lon0 + (e - g.offsetE) / (g.radius * k * Math.cos(g.lat0 * k));
+  return { lat, lon };
 }

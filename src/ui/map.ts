@@ -8,7 +8,7 @@ import { Sim } from '../core/sim';
 import type { Leg } from '../core/route';
 import { TAG_INFO, type Guardian } from '../core/guardian';
 
-export type LayerId = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog';
+export type LayerId = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog' | 'rover';
 
 type Ramp = [number, [number, number, number, number]][];
 const RAMPS: Record<string, Ramp> = {
@@ -38,10 +38,11 @@ const RAMPS: Record<string, Ramp> = {
 export const LAYER_INFO: Record<LayerId, { label: string; swatch: string; legend: string }> = {
   radiation: { label: 'RADIATION', swatch: '#ffdc3c', legend: 'GCR dose rate µSv/h (terrain-shielded)' },
   slope: { label: 'SLOPE', swatch: '#ff5a3c', legend: 'Terrain slope 0–30°' },
-  poi: { label: 'POI', swatch: '#39d0ff', legend: 'Sites, shelters, hazards' },
+  poi: { label: 'POI', swatch: '#27aae1', legend: 'Sites, shelters, hazards' },
   dust: { label: 'DUST', swatch: '#f0d6a8', legend: 'Dust deposit index' },
   mag: { label: 'MAG FIELD', swatch: '#c08cff', legend: 'Crustal magnetic field nT' },
   fog: { label: 'FOG OF WAR', swatch: '#555', legend: 'Unexplored terrain' },
+  rover: { label: 'ROVER ROUTE', swatch: '#27aae1', legend: 'Perseverance traverse, sols 13–760 (NASA/JPL)' },
 };
 
 function rampColor(r: Ramp, t: number) {
@@ -111,7 +112,7 @@ export interface LayerImage {
 }
 
 export class TacticalMap {
-  layers: Record<LayerId, boolean> = { radiation: false, slope: false, poi: true, dust: false, mag: false, fog: true };
+  layers: Record<LayerId, boolean> = { radiation: false, slope: false, poi: true, dust: false, mag: false, fog: true, rover: true };
   base: HTMLCanvasElement;
   images: Partial<Record<LayerId, LayerImage>> = {};
   fogCanvas: HTMLCanvasElement;
@@ -122,6 +123,7 @@ export class TacticalMap {
   constructor(private data: DataBundle, private sim: Sim) {
     this.ext = gridExtent(data.elevation);
     this.base = hillshade(data.elevation);
+    if (data.imagery) this.loadOrtho(data.imagery.mapUrl);
     this.images.radiation = gridToCanvas(data.radiation, RAMPS.radiation);
     this.images.slope = gridToCanvas(slopeGrid(data.elevation), RAMPS.slope, 0, 30);
     this.images.dust = gridToCanvas(data.dust, RAMPS.dust);
@@ -131,6 +133,69 @@ export class TacticalMap {
     sim.on('fog', () => (this.fogDirty = true));
   }
   private fogDirty = true;
+  /** called when the orthophoto base has loaded (static maps redraw) */
+  onBase: () => void = () => {};
+
+  /** Real data: the HiRISE orthophoto, warmed to Mars colour and lit by the DTM hillshade, becomes the map base. */
+  private loadOrtho(url: string) {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1024;
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, 1024, 1024);
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = '#d9925f';
+      ctx.fillRect(0, 0, 1024, 1024);
+      ctx.globalCompositeOperation = 'soft-light';
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(this.base, 0, 0, 1024, 1024);
+      this.base = c;
+      this.onBase();
+    };
+    img.src = url;
+  }
+
+  /** Perseverance's real route (NASA/JPL MMGIS) with its stops. */
+  private drawRover(ctx: CanvasRenderingContext2D, S: (e: number, n: number) => { x: number; y: number }, large: boolean) {
+    const t = this.data.traverse;
+    if (!t || !this.layers.rover) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(39,170,225,0.85)';
+    ctx.lineWidth = large ? 2 : 1.4;
+    ctx.lineJoin = ctx.lineCap = 'round';
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    t.points.forEach(([e, n], i) => {
+      const q = S(e, n);
+      if (i) ctx.lineTo(q.x, q.y);
+      else ctx.moveTo(q.x, q.y);
+    });
+    ctx.stroke();
+    if (large) {
+      ctx.font = '600 10px Inter, system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
+      let lastSol = -999;
+      for (const w of t.waypoints) {
+        const q = S(w.e, w.n);
+        ctx.fillStyle = '#27aae1';
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        if (w.sol - lastSol >= 120) {
+          lastSol = w.sol;
+          ctx.fillStyle = 'rgba(255,255,255,0.85)';
+          ctx.fillText(`SOL ${w.sol}`, q.x + 5, q.y);
+        }
+      }
+      const s0 = S(t.points[0][0], t.points[0][1]);
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'right';
+      ctx.fillText('ROVER LANDING · 18 FEB 2021', s0.x - 10, s0.y + 18);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  }
 
   toggle(id: LayerId, on?: boolean) {
     this.layers[id] = on ?? !this.layers[id];
@@ -224,7 +289,7 @@ export class TacticalMap {
     }
     // plan
     const plan = this.sim.plan;
-    if (plan && this.sim.status === 'active') this.drawRoute(ctx, plan.route, plan.offset, w, h, '#39d0ff', opts.large ? 3.5 : 2.6);
+    if (plan && this.sim.status === 'active') this.drawRoute(ctx, plan.route, plan.offset, w, h, '#27aae1', opts.large ? 3.5 : 2.6);
     // advisory alternate
     const adv = this.sim.advisory;
     if (adv) {
@@ -234,6 +299,7 @@ export class TacticalMap {
     if (opts.planner) this.drawRoute(ctx, opts.planner.route, opts.planner.offset, w, h, '#ffffff', opts.large ? 3 : 2, [2, 4]);
 
 
+    this.drawRover(ctx, (e, n) => this.toPx(e, n, w, h), !!opts.large);
     // POIs
     if (this.layers.poi) for (const p of this.data.pois) if (this.sim.discovered.has(p.id)) this.drawPoi(ctx, p, w, h, !!opts.large);
     this.drawLive(ctx, (e, n) => this.toPx(e, n, w, h), !!opts.large, !!opts.large);
@@ -438,7 +504,7 @@ export class TacticalMap {
       ctx.closePath();
       ctx.fill();
     } else {
-      const col = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'comms' ? '#3ce39a' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#39d0ff';
+      const col = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'comms' ? '#3ce39a' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#27aae1';
       ctx.fillStyle = col;
       ctx.strokeStyle = '#081018';
       if (p.kind === 'habitat') ctx.fillRect(x - sz, y - sz, sz * 2, sz * 2);
@@ -537,9 +603,10 @@ export class TacticalMap {
     for (const g of this.sim.world.edges.values()) line(legPts([{ edgeId: g.edge.id, forward: true }], 0), 'rgba(235,220,200,0.35)', 1, [2, 3]);
     line(this.sim.path.map(([e, n]) => ({ e, n })).concat([me]), 'rgba(60,227,154,0.85)', 2);
     const plan = this.sim.plan;
-    if (plan && this.sim.status === 'active') line(legPts(plan.route, plan.offset), '#39d0ff', 3);
+    if (plan && this.sim.status === 'active') line(legPts(plan.route, plan.offset), '#27aae1', 3);
     const adv = this.sim.advisory;
     if (adv) line(legPts(adv.altRoute, adv.altOffset), `rgba(255,176,32,${0.55 + 0.45 * Math.sin(opts.t * 6)})`, 3, [6, 4]);
+    this.drawRover(ctx, S, false);
     // hazards + POIs (upright symbols)
     for (const p of this.data.pois) {
       if (!this.sim.discovered.has(p.id)) continue;
@@ -555,7 +622,7 @@ export class TacticalMap {
         ctx.stroke();
         ctx.setLineDash([]);
       } else {
-        ctx.fillStyle = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#39d0ff';
+        ctx.fillStyle = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#27aae1';
         ctx.beginPath();
         ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2);
         ctx.fill();

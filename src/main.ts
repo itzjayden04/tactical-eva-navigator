@@ -1,5 +1,6 @@
 import { selectProvider } from './data';
 import type { DataBundle } from './data/types';
+import { toLatLon } from './data/types';
 import { Sim } from './core/sim';
 import { World } from './render/scene';
 import { Hud, fmtDur, fmtMET, FEATURE_LABEL, TAG_ACTS, km, esc } from './ui/hud';
@@ -66,7 +67,8 @@ async function boot() {
   const briefMap = new TacticalMap(data, sim);
   briefMap.guardian = guardian;
   briefMap.layers.fog = false;
-  briefMap.layers.radiation = true;
+  briefMap.layers.radiation = data.source !== 'nasa'; // real data: show the HiRISE photo + rover route instead
+  briefMap.onBase = () => briefMap.draw($('brief-map') as HTMLCanvasElement, { t: 0, large: true });
   const chk = (id: string, cls: string, text: string) => {
     const el = $(id);
     el.className = cls;
@@ -658,7 +660,16 @@ async function boot() {
     hud.confirmFocus();
     focusHoldUntil = performance.now() + 3000;
     const card = guardian.describe(p);
-    hud.showDetail('what', () => card, 10);
+    const sol = card.roverSol;
+    // real data: show what Perseverance's Navcam saw when it drove past this spot
+    const build = () => {
+      if (sol === undefined) return card;
+      const imgs = hud.feed.forSol(sol);
+      if (imgs === 'error') return { ...card, hint: `No Navcam frames from sol ${sol} in NASA's feed.` };
+      if (imgs === 'loading') return { ...card, hint: `Fetching Perseverance's Navcam frames from sol ${sol}…` };
+      return { ...card, gallery: imgs.slice(0, 3).map((i) => ({ src: i.thumb, caption: `Sol ${i.sol} · ${i.date}`, href: i.link })) };
+    };
+    hud.showDetail('what', build, sol === undefined ? 10 : 16);
     return { text: card.title, speak: card.speech };
   };
   let pendingTag: Pick | null = null;
@@ -867,7 +878,8 @@ async function boot() {
         const p = sim.position();
         const hab = sim.world.nodes.get(m.startNodeId)!;
         const d = Math.hypot(hab.e - p.e, hab.n - p.n);
-        r = say(`You are at east ${p.e.toFixed(0)}, north ${p.n.toFixed(0)}, ${Math.round(d)} metres ${bearingWord(p.e - hab.e, p.n - hab.n)} of the habitat${sim.pos.leg ? `, on the ${sim.world.edges.get(sim.pos.leg.edgeId)!.edge.name}` : ''}.`);
+        const ll = data.geo ? toLatLon(data.geo, p.e, p.n) : null;
+        r = say(`You are at ${ll ? `${ll.lat.toFixed(4)} degrees north, ${ll.lon.toFixed(4)} degrees east` : `east ${p.e.toFixed(0)}, north ${p.n.toFixed(0)}`}, ${Math.round(d)} metres ${bearingWord(p.e - hab.e, p.n - hab.n)} of the habitat${sim.pos.leg ? `, on the ${sim.world.edges.get(sim.pos.leg.edgeId)!.edge.name}` : ''}.`);
         break;
       }
       default:

@@ -425,6 +425,11 @@ export class Sim {
         this.toast(`${m.label} ended`);
         this.addLog({ kind: 'info', title: `${m.label} ended`, severity: 'info' });
       }
+      // a shelter divert is only needed while the radiation event lasts
+      if (this.goalOverride?.kind === 'shelter' && !this.mods.some((m) => (m.spec.doseMult ?? 1) > 1)) {
+        this.goalOverride = null;
+        this.toast('Space weather clear. Shelter no longer needed: back on the mission plan.');
+      }
       this.planDirty = true;
     }
     this.histTimer -= dt;
@@ -684,14 +689,33 @@ export class Sim {
     let bestEdge = '';
     let bestS = 0;
     let bestD = Infinity;
+    const perEdge = new Map<string, { d: number; s: number }>();
     for (const [id, g] of this.world.edges) {
+      let ed = Infinity;
+      let es = 0;
       for (const smp of g.samples) {
         const d = (smp.e - e) ** 2 + (smp.n - n) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          bestEdge = id;
-          bestS = smp.s;
+        if (d < ed) {
+          ed = d;
+          es = smp.s;
         }
+      }
+      perEdge.set(id, { d: ed, s: es });
+      if (ed < bestD) {
+        bestD = ed;
+        bestEdge = id;
+        bestS = es;
+      }
+    }
+    // real tracks share corridors near junctions: stay on the leg we're walking (or just committed to)
+    // unless another track is clearly closer
+    for (const pref of [this.pos.leg?.edgeId, this.committed[0]?.edgeId]) {
+      const c = pref ? perEdge.get(pref) : undefined;
+      if (c && pref !== bestEdge && Math.sqrt(c.d) < Math.sqrt(bestD) + 6) {
+        bestEdge = pref!;
+        bestS = c.s;
+        bestD = c.d;
+        break;
       }
     }
     this.offTrack = Math.sqrt(bestD);
@@ -701,7 +725,20 @@ export class Sim {
     const sameEdge = prevLeg?.edgeId === bestEdge;
     const prevSA = sameEdge ? (prevLeg!.forward ? this.pos.s : len - this.pos.s) : null;
     let forward = sameEdge ? prevLeg!.forward : this.arrivedFrom ? g.edge.a === this.arrivedFrom : bestS < len / 2;
-    if (prevSA !== null && Math.abs(bestS - prevSA) > 0.5) forward = bestS > prevSA;
+    // flip direction only after a few metres of consistent backwards motion, so bumping a boulder
+    // (or the body being pushed back) doesn't reverse the leg and send the walker home
+    if (prevSA !== null) {
+      const dir = bestS - prevSA;
+      // a jump of more than a few samples is a projection artefact (track curling back near itself), not motion
+      if (Math.abs(dir) > 0.05 && Math.abs(dir) < 12) {
+        if (dir > 0 !== forward) this.backAcc += Math.abs(dir);
+        else this.backAcc = Math.max(0, this.backAcc - Math.abs(dir));
+        if (this.backAcc > 4) {
+          forward = dir > 0;
+          this.backAcc = 0;
+        }
+      }
+    } else this.backAcc = 0;
     const leg: Leg = { edgeId: bestEdge, forward };
     const sNew = forward ? bestS : len - bestS;
     if (prevSA !== null && this.offTrack < 40) this.checkEdgeIncidents(leg, forward ? prevSA : len - prevSA, sNew, len);
@@ -716,6 +753,7 @@ export class Sim {
     this.pos = { leg, s: sNew, node: null };
   }
   private arrivedFrom: string | null = null;
+  private backAcc = 0;
 
   private arrive(node: string, initial = false) {
     this.arrivedVia = this.pos.leg?.edgeId ?? null;

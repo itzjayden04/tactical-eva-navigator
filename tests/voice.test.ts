@@ -76,6 +76,10 @@ it('tools, log, repeat, undo', () => {
   expect(t('how is the weather')).toEqual({ type: 'tool', tool: 'weather' });
   expect(t('system status')).toEqual({ type: 'tool', tool: 'systems' });
   expect(t('weather')).toEqual({ type: 'tool', tool: 'weather' });
+  expect(t('show rover images')).toEqual({ type: 'tool', tool: 'rover' });
+  expect(t('latest perseverance photos')).toEqual({ type: 'tool', tool: 'rover' });
+  expect(t('rover feed')).toEqual({ type: 'tool', tool: 'rover' });
+  expect(t('show rover layer')).toEqual({ type: 'layer', layer: 'rover', on: true });
   expect(t('show tags')).toEqual({ type: 'tool', tool: 'tags' });
   expect(t('tools')).toEqual({ type: 'tool', tool: 'tools' });
   expect(t('take a photo')).toEqual({ type: 'photo' });
