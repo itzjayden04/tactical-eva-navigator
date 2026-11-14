@@ -207,6 +207,8 @@ const POIS: Poi[] = [
   { id: 's2', kind: 'sample', name: 'Rim Megabreccia', e: -1000, n: 560, note: 'Impact breccia blocks from crater rim' },
   { id: 'shelter', kind: 'shelter', name: 'Rock Overhang', e: 900, n: -350, shielding: 0.12, radius: 45, note: 'Undercut butte face; ~88% sky blocked' },
   { id: 'relay', kind: 'comms', name: 'Comms Relay Hill', e: 1150, n: 750, note: 'Line of sight to habitat & orbiter' },
+  { id: 'cache-a', kind: 'cache', name: 'Supply Cache Alpha', e: 880, n: -372, note: 'Pre-placed O2, water and battery pack at the overhang' },
+  { id: 'cache-b', kind: 'cache', name: 'Supply Cache Bravo', e: 262, n: 372, note: 'Pre-placed O2, water and battery pack at Junction Bravo' },
   { id: 'hz-boulder', kind: 'hazard', name: 'Boulder Field', e: -150, n: -700, radius: 220, note: 'Slip and trip risk; slow traverse' },
   { id: 'hz-sand', kind: 'hazard', name: 'Soft Regolith (Wadi)', e: 230, n: -520, radius: 120, note: 'Aeolian infill; high sinkage' },
   { id: 'hz-rim', kind: 'hazard', name: 'Rim Scree Slope', e: -700, n: 520, radius: 220, note: 'Loose scree up to 25°' },

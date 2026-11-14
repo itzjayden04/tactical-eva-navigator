@@ -22,7 +22,7 @@ describe('core', async () => {
       if (sim.incident) { sim.resolveIncident(sim.incident.def.options.findIndex(o=>o.recommended)); continue; }
       if (sim.advisory) { sim.acceptAdvisory(); }
       if (sim.samplePrompt && sim.waitS <= 0) sim.markSample();
-      else if (sim.awaitingChoice && sim.waitS <= 0) sim.choose(0);
+      else if (sim.awaitingChoice && sim.waitS <= 0 && !sim.committed.length) sim.choose(0);
       sim.autopilot();
       sim.update(0.1);
     }
@@ -40,7 +40,7 @@ describe('core', async () => {
       if (sim.incident) { const o = sim.incident.def.options; sim.resolveIncident(o.length-1); continue; }
       if (sim.advisory) sim.dismissAdvisory();
       if (sim.samplePrompt && sim.waitS <= 0) sim.markSample();
-      else if (sim.awaitingChoice && sim.waitS <= 0) {
+      else if (sim.awaitingChoice && sim.waitS <= 0 && !sim.committed.length) {
         // pick the non-recommended forward option toward goal heuristically: highest score but not going back
         const c = [...sim.choices].filter(c=>c.forecast.distance < 6000).sort((a,b)=>b.score-a.score);
         sim.choose(sim.choices.indexOf(c[0] ?? sim.choices[0]));

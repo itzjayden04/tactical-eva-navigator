@@ -26,5 +26,11 @@ Tips for Suno:
 | `voice_ack.mp3` | one-shot, ~0.2 s | a voice command was understood | Two quick soft ascending sine blips, friendly confirmation, Apple-like, 0.2 seconds |
 | `gaze_lock.mp3` | one-shot, <0.1 s | eyes lock onto a feature | Tiny soft high tick, almost subliminal, glassy, 0.05 seconds |
 | `island_open.mp3` | one-shot, ~0.3 s | dynamic island expands with a decision or card | Soft airy whoosh with a gentle low tone, interface panel opening, 0.3 seconds |
+| `quake_rumble.mp3` | loop, fades in during a marsquake | marsquake | Instrumental sound design: deep low-frequency ground rumble heard through a spacesuit, rocks grinding and settling, no music, seamless loop |
+| `body_thud.mp3` | one-shot, ~0.5 s | the astronaut falls | Muffled heavy body thud on dusty ground heard from inside a helmet, suit fabric rustle, 0.5 seconds |
+| `jump.mp3` | one-shot, ~0.2 s | Space to jump | Soft suit push-off, short muffled boot scrape and breath, 0.2 seconds |
+| `tag_set.mp3` | one-shot, ~0.3 s | a tag is placed | Two quick bright glassy ticks, map pin dropped, 0.3 seconds |
+| `camera_shutter.mp3` | one-shot, ~0.2 s | photo taken | Crisp digital camera shutter click, 0.2 seconds |
+| `mayday.mp3` | one-shot, ~1 s | call for help sent | Three urgent radio beacon pips, distress transmit tone, 1 second |
 
 Mixing is done in `src/main.ts` (search for `audio.setLevel`), and the slot list lives in `src/ui/audio.ts`.

@@ -24,7 +24,8 @@
             <div id="island-content"></div>
           </div>
           <div id="voice-capsule" class="idle">
-            <span class="vc-mic"><span class="ms">mic</span><i class="vc-wave"><b></b><b></b><b></b><b></b></i></span>
+            <span class="vc-cam" id="cam-ind" title="Camera (gaze)"><span class="ms">videocam</span></span>
+            <span class="vc-mic" id="mic-ind" title="Microphone (voice)"><span class="ms">mic</span><i class="vc-wave"><b></b><b></b><b></b><b></b></i></span>
             <span id="voice-transcript"></span>
           </div>
         </div>
@@ -45,6 +46,7 @@
           <div class="halo" id="h-fatigue" data-gaze="fatigue" data-gaze-label="Fatigue"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="19" /><circle class="arc" cx="22" cy="22" r="19" /><line class="tick" x1="22" y1="1" x2="22" y2="7" /></svg><b>--</b><span>FTG</span></div>
         </div>
         <div id="vitals-line"><span class="ms">favorite</span><b id="v-hr">--</b><small>bpm</small><i></i><b id="v-speed">0.0</b><small>m/s</small><i></i><span id="v-pace">NOMINAL</span></div>
+        <div id="status-chips"></div>
       </div>
 
       <!-- right: radar minimap -->
@@ -62,12 +64,22 @@
         <button class="dock-item" id="dock-drone" data-gaze="drone" data-gaze-label="Drone scout"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="20" /><circle class="arc" cx="22" cy="22" r="20" /></svg><span class="ms">flight</span><em>Drone</em></button>
         <button class="dock-item" id="dock-sample" data-gaze="sample" data-gaze-label="Samples"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="20" /><circle class="arc" cx="22" cy="22" r="20" /></svg><span class="ms">science</span><em>Sample</em></button>
         <button class="dock-item" id="dock-layers" data-gaze="layers" data-gaze-label="Map layers"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="20" /><circle class="arc" cx="22" cy="22" r="20" /></svg><span class="ms">layers</span><em>Layers</em></button>
+        <button class="dock-item" id="dock-tools" data-gaze="tools" data-gaze-label="Tools"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="20" /><circle class="arc" cx="22" cy="22" r="20" /></svg><span class="ms">apps</span><em>Tools</em></button>
+        <button class="dock-item sos" id="dock-sos" data-gaze="emergency" data-gaze-label="Emergency"><svg viewBox="0 0 44 44"><circle class="trk" cx="22" cy="22" r="20" /><circle class="arc" cx="22" cy="22" r="20" /></svg><span class="ms">sos</span><em>Emergency</em></button>
       </div>
 
       <!-- drone live feed (picture-in-picture) -->
       <div id="drone-pip" data-gaze="drone" data-gaze-label="Drone feed"><span class="pip-tag"><i></i>SCOUT-01 LIVE</span><span id="drone-status" class="pip-stat"></span></div>
 
+      <!-- mission log + conversation (traceability): "show log" -->
+      <div id="log-panel" class="hidden" data-gaze="log" data-gaze-label="Mission log">
+        <div class="lp-head"><span class="ms">history</span><b>Mission log</b><span class="dim" id="lp-count"></span><button id="btn-log-close" class="lp-x" data-gaze="log-close" data-gaze-label="Close log"><span class="ms">close</span></button></div>
+        <div id="lp-list"></div>
+      </div>
+
       <div id="hud-chevrons"></div>
+      <!-- selection outline around what the astronaut is looking at in the world -->
+      <div id="focus-ring"><i></i><i></i><i></i><i></i><span id="focus-label"></span></div>
       <div id="reticle"><i></i><span id="zoom-readout"></span></div>
       <div id="gaze-cursor"></div>
       <div id="hint-line"></div>
@@ -105,11 +117,18 @@
     <!-- ===================== GAZE CALIBRATION ===================== -->
     <div id="calib" class="hidden">
       <div id="calib-dot"><i></i></div>
+      <div id="calib-count"></div>
       <div id="calib-panel">
         <div id="calib-title">Gaze calibration</div>
         <div id="calib-text">Keep your head comfortable and follow the dot with your eyes.</div>
         <div id="calib-cam"><canvas id="calib-preview" width="160" height="120"></canvas></div>
+        <div id="calib-voice" class="hidden">
+          <div id="calib-phrase">“Hi TEVAN”</div>
+          <div id="calib-meter"><i></i><b></b></div>
+          <div id="calib-heard"></div>
+        </div>
       </div>
+      <button id="calib-skip" class="pill ghost">Skip</button>
     </div>
 
     <!-- ===================== BOOT (pre-egress) ===================== -->
@@ -140,7 +159,7 @@
           <button id="btn-skip-calib" class="pill ghost">Begin without gaze</button>
           <button id="btn-begin" class="pill solid big">Calibrate gaze &amp; begin EVA</button>
         </div>
-        <div class="boot-foot"><span id="brief-datasource">DATA: SYNTHETIC</span><span>Gaze is processed on this device. Speech uses the browser's recognition service. Move with W A S D · drag to look · scroll to zoom.</span></div>
+        <div class="boot-foot"><span id="brief-datasource">DATA: SYNTHETIC</span><span>Gaze is processed on this device. Speech uses the browser's recognition service. Move with W A S D · Space to jump · drag to look · scroll to zoom.</span></div>
       </div>
     </div>
 
@@ -168,6 +187,7 @@
       </div>
     </div>
 
+    <div id="photo-flash"></div>
     <div id="loading" class="screen"><div class="loader">TEVAN<br /><span class="dim">building terrain, radiation and route models</span></div></div>
 
     <script type="module" src="./src/main.ts"></script>

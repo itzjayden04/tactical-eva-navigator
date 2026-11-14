@@ -32,6 +32,7 @@ export type PoiKind =
   | 'shelter'
   | 'hazard'
   | 'comms'
+  | 'cache'
   | 'landmark';
 
 export interface Poi {
@@ -92,6 +93,8 @@ export interface IncidentEffect {
   reroute?: 'shelter' | 'habitat' | 'avoid_steep' | 'alternate';
   setPace?: 'slow' | 'nominal' | 'fast';
   note?: string;
+  /** named action handled by the guardian (resupply, call help, stability assist, ...) */
+  action?: string;
 }
 
 export interface IncidentOption {

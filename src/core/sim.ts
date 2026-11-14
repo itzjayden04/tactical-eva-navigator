@@ -7,6 +7,8 @@ import type { DataBundle, IncidentDef, IncidentEffect, Poi, Severity } from '../
 import { checkFailure, FATIGUE_REROUTE, HealthState, initialHealth, RESERVE_FRAC, step } from './health';
 import { ActiveMod, aggregate, forecastRoute, ForecastResult, NodeWaits, shieldingAt } from './forecast';
 import { Leg, RouteMetrics, sameRoute, TrackWorld, walkSpeed } from './route';
+import { makeObstacles, NavGrid, ObstacleIndex, seeded, stumbleRisk, type Obstacle } from './terrain';
+import { slopeDeg } from './grid';
 import { sample } from './grid';
 
 export type Status = 'briefing' | 'active' | 'success' | 'aborted' | 'failed';
@@ -15,6 +17,9 @@ export const PACE_V: Record<Pace, number> = { slow: 0.7, nominal: 1.0, fast: 1.3
 export const SAMPLE_TIME_S = 240;
 export const WARP = 10;
 export const WAIT_WARP = 40;
+/** Mars surface gravity, m/s² */
+export const G_MARS_MS2 = 3.71;
+export const JUMP_V = 2.5;
 
 export interface LogEntry {
   met: number;
@@ -147,6 +152,26 @@ export class Sim {
   /** edge we arrived on at the current node (to discourage backtracking) */
   arrivedVia: string | null = null;
   warp = WARP;
+  // ---- real terrain: boulders, guide path, body state (jump / stumble / fall)
+  obstacles: ObstacleIndex;
+  nav: NavGrid;
+  /** AR guide path from the astronaut's feet along the plan (world e,n), refreshed continuously */
+  guide: [number, number][] = [];
+  private guideTimer = 0;
+  private guideKey = '';
+  /** body state in REAL seconds (not warped): alt = height above ground while jumping */
+  body = { alt: 0, vz: 0, stumbleT: 0, fallT: 0, shake: 0, blockedT: 0 };
+  /** suit stability assist: braces joints, lowers stumble risk, caps speed */
+  stability = false;
+  /** current stumble risk per metre (for the HUD) */
+  risk = 0;
+  private rnd = seeded(7331);
+  private riskAcc = 0;
+  stats2 = { stumbles: 0, falls: 0, jumps: 0, blocked: 0 };
+  /** off-graph destination (supply cache, tag, teammate): the guide path leads straight there */
+  detour: { e: number; n: number; label: string; id: string } | null = null;
+  /** extra sections merged into the exported log (tags, comms, photos) */
+  extra: Record<string, unknown> = {};
 
   constructor(public data: DataBundle) {
     this.world = new TrackWorld(data);
@@ -158,6 +183,8 @@ export class Sim {
     const n = this.world.nodes.get(start)!;
     this.drone = { active: false, mode: 'hold', e: n.e, n: n.n, alt: 0, heading: 0, path: [], idx: 0, battery: 100, revealedCells: 0 };
     for (const p of data.pois) if (p.kind !== 'hazard') this.discovered.add(p.id);
+    this.obstacles = new ObstacleIndex(makeObstacles(data, this.world));
+    this.nav = new NavGrid(data, this.world, this.obstacles);
   }
 
   // ---------------------------------------------------------------- events
@@ -181,12 +208,16 @@ export class Sim {
     return { e, n, h: sample(this.data.elevation, e, n), gradePct: this.lastGrade, doseBase: sample(this.data.radiation, e, n), dust: sample(this.data.dust, e, n) };
   }
   isMoving() {
-    return this.status === 'active' && !this.incident && this.waitS <= 0 && (this.input.f !== 0 || this.input.r !== 0);
+    return this.status === 'active' && !this.incident && this.waitS <= 0 && this.body.fallT <= 0 && (this.input.f !== 0 || this.input.r !== 0);
   }
   /** Bearing (rad) toward the next point of the navigator's plan; used to face the astronaut at start and by the test autopilot. */
   suggestedHeading(lookAhead = 15): number {
     const plan = this.plan;
     const p = this.position();
+    // the guide path already bends around boulders: follow it when we have one
+    for (const [ge, gn] of this.guide) {
+      if (Math.hypot(ge - p.e, gn - p.n) >= Math.min(lookAhead, 7)) return Math.atan2(ge - p.e, gn - p.n);
+    }
     if (plan && plan.route.length) {
       let leg = plan.route[0];
       // progress along the first leg = nearest point to the astronaut (offset is stale while still inside a node's radius)
@@ -226,6 +257,7 @@ export class Sim {
   }
   nextWaypoint(): { name: string; e: number; n: number; dist: number } | null {
     const p = this.position();
+    if (this.detour) return { name: this.detour.label, e: this.detour.e, n: this.detour.n, dist: Math.hypot(this.detour.e - p.e, this.detour.n - p.n) };
     let node: string | null = null;
     if (this.pos.leg) node = this.world.legTo(this.pos.leg);
     else if (this.committed[0]) node = this.world.legTo(this.committed[0]);
@@ -266,6 +298,7 @@ export class Sim {
 
   update(dtReal: number) {
     if (this.status !== 'active') return;
+    this.updateBody(Math.min(dtReal, 0.1));
     if (this.incident) {
       this.incident.remainingReal -= dtReal;
       if (this.incident.remainingReal <= 0) this.resolveIncident(this.incident.def.defaultOption, true);
@@ -298,7 +331,7 @@ export class Sim {
         cb?.();
         this.planDirty = true;
       }
-    } else if (this.input.f !== 0 || this.input.r !== 0) {
+    } else if (this.body.fallT <= 0 && (this.input.f !== 0 || this.input.r !== 0)) {
       const dir = this.lookYaw + Math.atan2(this.input.r, this.input.f);
       const se = Math.sin(dir);
       const cn = Math.cos(dir);
@@ -307,16 +340,61 @@ export class Sim {
       const onTrackEta = this.offTrack < 30 && this.pos.leg ? this.world.edges.get(this.pos.leg.edgeId)!.eta : null;
       const eta = onTrackEta ?? 1.25 + 0.8 * (this.data.rocks ? sample(this.data.rocks, p.e, p.n) : 0.2);
       const pace = this.paceV() * (this.input.sprint ? 1.35 : 1) * (this.input.f < 0 && this.input.r === 0 ? 0.6 : 1);
-      const v = walkSpeed(pace, grade, eta, agg.speedCap, agg.dust);
+      const v = walkSpeed(pace, grade, eta, agg.speedCap, agg.dust) * (this.body.stumbleT > 0 ? 0.35 : 1) * (this.stability ? 0.85 : 1);
       const half = (g.cell * (g.width - 1)) / 2 - 40;
       const cx = g.originE + half + 40;
       const cy = g.originN - half - 40;
-      this.free.e = Math.max(cx - half, Math.min(cx + half, p.e + se * v * dt));
-      this.free.n = Math.max(cy - half, Math.min(cy + half, p.n + cn * v * dt));
+      let ne = Math.max(cx - half, Math.min(cx + half, p.e + se * v * dt));
+      let nn = Math.max(cy - half, Math.min(cy + half, p.n + cn * v * dt));
+      // boulders block you (slide around them); a jump clears low rocks
+      let hit = false;
+      for (const o of this.obstacles.near(ne, nn, 3)) {
+        if (this.body.alt > o.h + 0.05) continue;
+        const d = Math.hypot(ne - o.e, nn - o.n);
+        const min = o.r + 0.45;
+        if (d < min) {
+          const k = d > 1e-3 ? min / d : 1;
+          ne = o.e + (d > 1e-3 ? (ne - o.e) * k : min);
+          nn = o.n + (d > 1e-3 ? (nn - o.n) * k : 0);
+          hit = true;
+        }
+      }
+      // ground too steep to climb: you slide back
+      if (slopeDeg(g, ne, nn) > 34 && sample(g, ne, nn) > p.h) {
+        ne = p.e;
+        nn = p.n;
+        hit = true;
+      }
+      if (hit && this.body.blockedT <= 0) {
+        this.body.blockedT = 2.5;
+        this.stats2.blocked++;
+        this.emit('blocked');
+      }
+      const moved = Math.hypot(ne - p.e, nn - p.n);
+      this.free.e = ne;
+      this.free.n = nn;
       this.lastGrade = grade;
-      this.stats.distance += v * dt;
+      this.stats.distance += moved;
+      // footing: rough ground, speed, dust and fatigue can make you stumble or fall
+      const rockHere = this.data.rocks ? sample(this.data.rocks, ne, nn) : 0.2;
+      this.risk = stumbleRisk({ rock: rockHere, slopeDeg: slopeDeg(g, ne, nn), sprint: this.input.sprint, dust: agg.dust, fatigue: this.health.fatigue, pace: this.paceV(), assist: this.stability, onTrack: this.offTrack < 8 });
+      if (this.body.alt <= 0 && this.body.fallT <= 0) {
+        this.riskAcc += this.risk * moved;
+        if (this.riskAcc > 1) {
+          this.riskAcc = 0;
+          this.trip(this.rnd() < 0.3 ? 'fall' : 'stumble');
+        }
+      }
       this.health = step(this.health, { speed: v, gradePct: grade, eta, doseRate, ambientC: amb, dust: agg.dust, mods: agg }, dt);
       this.trackUpdate();
+      if (this.detour && Math.hypot(this.detour.e - ne, this.detour.n - nn) < 12) {
+        const d = this.detour;
+        this.detour = null;
+        this.guideKey = '';
+        this.toast(`Arrived: ${d.label}`);
+        this.emit('detour-arrive', d);
+        this.emit('change');
+      }
     } else {
       this.lastGrade = 0;
       this.health = step(this.health, { speed: 0, gradePct: 0, eta: 1, doseRate, ambientC: amb, dust: agg.dust, mods: agg }, dt);
@@ -381,6 +459,198 @@ export class Sim {
         this.health.coreC = Math.min(this.health.coreC, 39.7);
       } else this.fail(fail.reason!);
     }
+  }
+
+
+  // ---------------------------------------------------------------- body: jump, stumble, fall (real time)
+  /** Space bar. Mars gravity: about 0.85 m high and 1.3 s in the air. */
+  jump() {
+    if (this.status !== 'active' || this.incident || this.waitS > 0 || this.body.alt > 0 || this.body.fallT > 0) return false;
+    this.body.vz = JUMP_V * (this.health.fatigue > 70 ? 0.8 : 1);
+    this.body.alt = 0.001;
+    this.stats2.jumps++;
+    this.health.fatigue = Math.min(100, this.health.fatigue + 0.25);
+    this.emit('jump');
+    return true;
+  }
+  /** Lose your footing. A stumble slows you; a fall puts you on the ground for a few seconds. */
+  trip(kind: 'stumble' | 'fall', cause = '') {
+    if (this.body.fallT > 0) return;
+    const p = this.position();
+    const where = cause || (this.data.rocks && sample(this.data.rocks, p.e, p.n) > 0.45 ? 'loose rock' : Math.abs(this.lastGrade) > 20 ? 'steep ground' : 'uneven ground');
+    if (kind === 'stumble') {
+      this.body.stumbleT = 1.6;
+      this.body.shake = 0.6;
+      this.stats2.stumbles++;
+      this.health.fatigue = Math.min(100, this.health.fatigue + 0.6);
+      this.addLog({ kind: 'info', title: `Stumble: ${where}`, severity: 'caution', outcome: 'Recovered' });
+    } else {
+      this.body.fallT = 4;
+      this.body.shake = 1;
+      this.stats2.falls++;
+      this.health.fatigue = Math.min(100, this.health.fatigue + 2.5);
+      this.health.hr = Math.min(190, this.health.hr + 18);
+      this.addLog({ kind: 'hazard', title: `Fall: ${where}`, severity: 'warning', outcome: 'Back on feet' });
+    }
+    this.emit('trip', { kind, where });
+    this.emit('change');
+  }
+  private updateBody(dt: number) {
+    const b = this.body;
+    if (b.alt > 0) {
+      b.vz -= G_MARS_MS2 * dt;
+      b.alt += b.vz * dt;
+      if (b.alt <= 0) {
+        b.alt = 0;
+        b.vz = 0;
+        b.shake = Math.max(b.shake, 0.25);
+        // landing on rough ground can cost you your footing
+        const p = this.position();
+        const rock = this.data.rocks ? sample(this.data.rocks, p.e, p.n) : 0.2;
+        if (this.rnd() < rock * 0.35 * (this.stability ? 0.3 : 1)) this.trip(this.rnd() < 0.25 ? 'fall' : 'stumble', 'a bad landing');
+      }
+    }
+    b.stumbleT = Math.max(0, b.stumbleT - dt);
+    b.fallT = Math.max(0, b.fallT - dt);
+    b.blockedT = Math.max(0, b.blockedT - dt);
+    b.shake = Math.max(0, b.shake - dt * 1.4);
+    this.guideTimer -= dt;
+    if (this.guideTimer <= 0) this.updateGuide();
+  }
+
+  /**
+   * AR guide: A* from the astronaut's feet to a point ahead on the planned route,
+   * then on along the route. Recomputed as you move, deviate, reroute, or the terrain changes.
+   */
+  updateGuide(force = false) {
+    this.guideTimer = 0.5;
+    const plan = this.plan;
+    const p = this.position();
+    if (this.detour) {
+      const d = this.detour;
+      const dk = `d|${Math.round(p.e / 3)},${Math.round(p.n / 3)}|${d.id}|${this.nav.version}`;
+      if (!force && dk === this.guideKey) return;
+      this.guideKey = dk;
+      this.guide = this.nav.path({ e: p.e, n: p.n }, { e: d.e, n: d.n }, 90000) ?? [[p.e, p.n], [d.e, d.n]];
+      return;
+    }
+    if (!plan || !plan.route.length) {
+      this.guide = [];
+      return;
+    }
+    const key = `${Math.round(p.e / 3)},${Math.round(p.n / 3)}|${plan.route.map((l) => l.edgeId + (l.forward ? 'f' : 'r')).join('')}|${this.nav.version}`;
+    if (!force && key === this.guideKey) return;
+    this.guideKey = key;
+    // targets along the route ahead: a point every ~40 m, and ALWAYS each leg's end node
+    // (the guide must lead through waypoints, not cut the corner past them)
+    const targets: { e: number; n: number; must: boolean }[] = [];
+    let acc = 0;
+    outer: for (let li = 0; li < plan.route.length; li++) {
+      const leg = plan.route[li];
+      const len = this.world.legLength(leg);
+      let q0 = 0;
+      if (li === 0) {
+        // progress = nearest point on the first leg (pos.s is stale while still inside a node's radius)
+        let bd = Infinity;
+        const from = Math.min(len, this.pos.leg ? this.pos.s : plan.offset);
+        for (let q = from; q <= Math.min(len, from + 90); q += 3) {
+          const pt = this.world.pointOnLeg(leg, q);
+          const d = Math.hypot(pt.e - p.e, pt.n - p.n);
+          if (d < bd) {
+            bd = d;
+            q0 = q;
+          }
+        }
+        q0 += 30;
+      } else q0 = 40;
+      for (let q = q0; q < len - 15; q += 40) {
+        const pt = this.world.pointOnLeg(leg, q);
+        if (!this.nav.blockedAt(pt.e, pt.n)) targets.push({ e: pt.e, n: pt.n, must: false });
+        acc += 40;
+        if (acc > 240) break outer;
+      }
+      const end = this.world.pointOnLeg(leg, len);
+      targets.push({ e: end.e, n: end.n, must: true });
+      if (acc > 240) break;
+    }
+    const guide: [number, number][] = [[p.e, p.n]];
+    let from = { e: p.e, n: p.n };
+    for (const t of targets) {
+      if (Math.hypot(t.e - from.e, t.n - from.n) < 4) continue;
+      const seg = this.nav.path(from, t, 20000);
+      if (seg && seg.length > 1) guide.push(...seg.slice(1));
+      else guide.push([t.e, t.n]);
+      from = t;
+    }
+    this.guide = guide;
+  }
+
+  /** Public reroute entry points for the emergency actions. */
+  rerouteTo(kind: 'shelter' | 'habitat' | 'avoid_steep' | 'alternate') {
+    this.advisory = null;
+    this.applyReroute(kind);
+    this.recomputePlan();
+    this.updateGuide(true);
+    this.emit('change');
+  }
+  /** Divert to any traverse node (e.g. a supply cache), then carry on with the mission. */
+  divertTo(nodeId: string, label: string) {
+    this.advisory = null;
+    this.goalOverride = { node: nodeId, kind: 'shelter' };
+    const best = this.bestCandidate(nodeId, { wO2: 800 });
+    if (best) this.commitCandidate(best.cand);
+    this.addLog({ kind: 'reroute', title: `Diverting to ${label}`, severity: 'caution', outcome: best ? `${(best.f.timeS / 60).toFixed(0)} min` : '' });
+    this.recomputePlan();
+    this.updateGuide(true);
+    this.emit('change');
+  }
+  /** Navigate off the traverse graph to any point (cache, tag, teammate). */
+  setDetour(e: number, n: number, label: string, id = label) {
+    this.detour = { e, n, label, id };
+    this.addLog({ kind: 'reroute', title: `Navigating to ${label}`, severity: 'info', outcome: `${Math.hypot(e - this.free.e, n - this.free.n).toFixed(0)} m, obstacle-aware path` });
+    this.updateGuide(true);
+    this.emit('change');
+  }
+  clearDetour() {
+    if (!this.detour) return;
+    this.detour = null;
+    this.guideKey = '';
+    this.updateGuide(true);
+    this.emit('change');
+  }
+  /** Close a traverse (rockfall): rubble on the ground, removed from every route search. */
+  blockEdge(edgeId: string, atFrac = 0.5) {
+    const g = this.world.edges.get(edgeId);
+    if (!g || this.world.blocked.has(edgeId)) return;
+    this.world.blocked.add(edgeId);
+    const c = this.world.pointOnLeg({ edgeId, forward: true }, g.length * atFrac);
+    const r = seeded(edgeId.length * 977 + 5);
+    for (let i = 0; i < 26; i++) {
+      const a = r() * Math.PI * 2;
+      const d = r() * 16;
+      const rad = 1.2 + r() * 2.6;
+      this.obstacles.add({ e: c.e + Math.cos(a) * d, n: c.n + Math.sin(a) * d, r: rad, h: rad * 0.9, kind: 'rubble' } as Obstacle);
+    }
+    this.nav.rebuild();
+    this.committed = this.committed.filter((l) => l.edgeId !== edgeId);
+    this.addLog({ kind: 'hazard', title: `Rockfall: ${g.edge.name} blocked`, severity: 'warning', outcome: 'Removed from routing' });
+    this.emit('obstacles');
+    this.recomputePlan();
+    this.updateGuide(true);
+    this.emit('change');
+    return c;
+  }
+  /** Hold still to bring heart rate and fatigue down. */
+  rest(seconds = 300) {
+    if (this.waitS > 0 || this.status !== 'active') return 'Already holding';
+    this.wait(seconds, 'RESTING', () => this.toast('Rest complete'));
+    this.addLog({ kind: 'decision', title: 'Rest stop', severity: 'info', decision: `${Math.round(seconds / 60)} min` });
+    this.emit('change');
+    return `Resting for ${Math.round(seconds / 60)} minutes`;
+  }
+  hold(seconds: number, reason: string, then?: () => void) {
+    this.wait(seconds, reason, then);
+    this.emit('change');
   }
 
   // ---------------------------------------------------------------- movement
@@ -615,6 +885,7 @@ export class Sim {
     if (eff.setPace) this.pace = eff.setPace;
     if (eff.note === 'drone-relay') this.launchDrone('relay');
     if (eff.reroute) this.applyReroute(eff.reroute);
+    if (eff.action) this.emit('action', eff.action);
   }
 
   private applyReroute(kind: 'shelter' | 'habitat' | 'avoid_steep' | 'alternate') {
@@ -768,6 +1039,7 @@ export class Sim {
     const forecast = forecastRoute(this.world, this.health, this.mods, route, offset, this.paceV(), this.data.conditions.surfaceTempC, waits);
     this.plan = { route, offset, waits, forecast, metrics: this.world.metrics(route, offset), goal: this.currentGoal() };
     if (this.awaitingChoice) this.computeChoices();
+    this.guideKey = '';
     this.emit('plan');
   }
 
@@ -777,6 +1049,7 @@ export class Sim {
     const goal = this.currentGoal();
     const out: Choice[] = [];
     for (const leg of this.world.adj.get(node)!) {
+      if (this.world.blocked.has(leg.edgeId)) continue;
       const to = this.world.legTo(leg);
       const rest = to === goal ? [] : (this.bestPathFrom(to, goal, leg.edgeId) ?? []);
       const full = [leg, ...rest];
@@ -1112,6 +1385,8 @@ export class Sim {
       log: this.log,
       history: this.history,
       fieldNotes: this.marks,
+      terrain: this.stats2,
+      ...this.extra,
     };
   }
 }

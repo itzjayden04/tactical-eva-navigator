@@ -6,6 +6,7 @@ import type { DataBundle, Grid, Poi } from '../data/types';
 import { gridExtent, gridStats, slopeGrid } from '../core/grid';
 import { Sim } from '../core/sim';
 import type { Leg } from '../core/route';
+import { TAG_INFO, type Guardian } from '../core/guardian';
 
 export type LayerId = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog';
 
@@ -235,6 +236,7 @@ export class TacticalMap {
 
     // POIs
     if (this.layers.poi) for (const p of this.data.pois) if (this.sim.discovered.has(p.id)) this.drawPoi(ctx, p, w, h, !!opts.large);
+    this.drawLive(ctx, (e, n) => this.toPx(e, n, w, h), !!opts.large, !!opts.large);
     // field notes
     for (const m of this.sim.marks) {
       const p = this.toPx(m.e, m.n, w, h);
@@ -328,6 +330,90 @@ export class TacticalMap {
     ctx.fillText('N ▲', w - 8, 14);
   }
   headingRad = 0;
+  guardian: Guardian | null = null;
+
+  /** tags, crew, blocked traverses and the live guide path: drawn on both the radar and the full map */
+  private drawLive(ctx: CanvasRenderingContext2D, S: (e: number, n: number) => { x: number; y: number }, large: boolean, labels: boolean) {
+    const sim = this.sim;
+    // rockfall: blocked traverses in red with a cross
+    for (const id of sim.world.blocked) {
+      const g = sim.world.edges.get(id)!;
+      ctx.strokeStyle = 'rgba(255,90,95,0.9)';
+      ctx.lineWidth = large ? 3 : 2.2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      g.samples.forEach((smp, i) => {
+        const q = S(smp.e, smp.n);
+        if (i) ctx.lineTo(q.x, q.y);
+        else ctx.moveTo(q.x, q.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const o of sim.obstacles.all) {
+      if (o.kind !== 'rubble') continue;
+      const q = S(o.e, o.n);
+      ctx.fillStyle = 'rgba(255,90,95,0.9)';
+      ctx.fillRect(q.x - 1.2, q.y - 1.2, 2.4, 2.4);
+    }
+    // live guide path (what the ground arrows follow)
+    if (sim.status === 'active' && sim.guide.length > 1) {
+      ctx.strokeStyle = sim.detour ? '#ff6bd6' : '#ffffff';
+      ctx.lineWidth = large ? 2 : 1.6;
+      ctx.setLineDash(sim.detour ? [] : [1, 3]);
+      ctx.beginPath();
+      sim.guide.forEach(([e, n], i) => {
+        const q = S(e, n);
+        if (i) ctx.lineTo(q.x, q.y);
+        else ctx.moveTo(q.x, q.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const g = this.guardian;
+    if (!g) return;
+    for (const en of g.entities) {
+      const q = S(en.e, en.n);
+      ctx.fillStyle = en.kind === 'teammate' ? '#4da3ff' : '#d8d8d8';
+      ctx.strokeStyle = '#081018';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      if (en.kind === 'teammate') ctx.arc(q.x, q.y, large ? 5.5 : 4.2, 0, Math.PI * 2);
+      else ctx.rect(q.x - 3.5, q.y - 3.5, 7, 7);
+      ctx.fill();
+      ctx.stroke();
+      if (labels) {
+        ctx.font = '11px Inter, system-ui, sans-serif';
+        ctx.fillStyle = 'rgba(235,250,255,0.95)';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(en.name, q.x + 8, q.y);
+      }
+    }
+    for (const t of g.tags) {
+      const pos = g.tagPos(t);
+      const q = S(pos.e, pos.n);
+      const sz = large ? 6 : 4.5;
+      ctx.fillStyle = TAG_INFO[t.kind].color;
+      ctx.strokeStyle = '#081018';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(q.x, q.y - sz);
+      ctx.lineTo(q.x + sz, q.y);
+      ctx.lineTo(q.x, q.y + sz);
+      ctx.lineTo(q.x - sz, q.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      if (labels) {
+        ctx.font = '600 11px Inter, system-ui, sans-serif';
+        ctx.fillStyle = TAG_INFO[t.kind].color;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(t.label, q.x + sz + 4, q.y);
+      }
+    }
+  }
 
   private drawPoi(ctx: CanvasRenderingContext2D, p: Poi, w: number, h: number, large: boolean) {
     const { x, y } = this.toPx(p.e, p.n, w, h);
@@ -352,7 +438,7 @@ export class TacticalMap {
       ctx.closePath();
       ctx.fill();
     } else {
-      const col = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'comms' ? '#3ce39a' : '#39d0ff';
+      const col = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'comms' ? '#3ce39a' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#39d0ff';
       ctx.fillStyle = col;
       ctx.strokeStyle = '#081018';
       if (p.kind === 'habitat') ctx.fillRect(x - sz, y - sz, sz * 2, sz * 2);
@@ -469,12 +555,13 @@ export class TacticalMap {
         ctx.stroke();
         ctx.setLineDash([]);
       } else {
-        ctx.fillStyle = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : '#39d0ff';
+        ctx.fillStyle = p.kind === 'habitat' ? '#3ce39a' : p.kind === 'shelter' ? '#a0e7ff' : p.kind === 'cache' ? (this.guardian?.cachesUsed.has(p.id) ? '#777777' : '#ffb020') : '#39d0ff';
         ctx.beginPath();
         ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2);
         ctx.fill();
       }
     }
+    this.drawLive(ctx, S, false, false);
     const d = this.sim.drone;
     if (d.active) {
       const q = S(d.e, d.n);

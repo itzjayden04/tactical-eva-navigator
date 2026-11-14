@@ -19,9 +19,15 @@ export type Slot =
   | 'ui_click'
   | 'voice_ack'
   | 'gaze_lock'
-  | 'island_open';
+  | 'island_open'
+  | 'quake_rumble'
+  | 'body_thud'
+  | 'jump'
+  | 'tag_set'
+  | 'camera_shutter'
+  | 'mayday';
 
-const LOOPS: Slot[] = ['music_bed', 'ambient_wind', 'suit_breathing', 'plss_hum', 'dust_storm', 'spe_geiger', 'drone_rotor'];
+const LOOPS: Slot[] = ['music_bed', 'ambient_wind', 'suit_breathing', 'plss_hum', 'dust_storm', 'spe_geiger', 'drone_rotor', 'quake_rumble'];
 
 export class Audio {
   ctx: AudioContext | null = null;
@@ -39,7 +45,7 @@ export class Audio {
     this.master.gain.value = 0.7;
     this.master.connect(this.ctx.destination);
     await Promise.all(
-      ([...LOOPS, 'alert_caution', 'alert_warning', 'alert_emergency', 'reroute_chime', 'sample_collect', 'ui_click', 'voice_ack', 'gaze_lock', 'island_open'] as Slot[]).map(async (s) => {
+      ([...LOOPS, 'alert_caution', 'alert_warning', 'alert_emergency', 'reroute_chime', 'sample_collect', 'ui_click', 'voice_ack', 'gaze_lock', 'island_open', 'body_thud', 'jump', 'tag_set', 'camera_shutter', 'mayday'] as Slot[]).map(async (s) => {
         try {
           const r = await fetch(`./audio/${s}.mp3`);
           if (!r.ok || !(r.headers.get('content-type') ?? '').includes('audio')) return;
@@ -109,8 +115,8 @@ export class Audio {
       src.start();
       return;
     }
-    if (slot === 'plss_hum' || slot === 'drone_rotor' || slot === 'music_bed') {
-      const freqs = slot === 'plss_hum' ? [58, 116] : slot === 'drone_rotor' ? [92, 184] : [55, 82.4, 110, 164.8];
+    if (slot === 'plss_hum' || slot === 'drone_rotor' || slot === 'music_bed' || slot === 'quake_rumble') {
+      const freqs = slot === 'quake_rumble' ? [27, 33, 41] : slot === 'plss_hum' ? [58, 116] : slot === 'drone_rotor' ? [92, 184] : [55, 82.4, 110, 164.8];
       const f = ctx.createBiquadFilter();
       f.type = 'lowpass';
       f.frequency.value = slot === 'music_bed' ? 600 : 500;
@@ -193,6 +199,20 @@ export class Audio {
       beep(659, 0.12, 0.2);
       beep(784, 0.24, 0.35);
     } else if (slot === 'ui_click') beep(1600, 0, 0.04, 'square', 0.06);
+    else if (slot === 'voice_ack') beep(1250, 0, 0.07, 'sine', 0.08);
+    else if (slot === 'gaze_lock') beep(2100, 0, 0.025, 'sine', 0.035);
+    else if (slot === 'island_open') beep(520, 0, 0.14, 'sine', 0.07);
+    else if (slot === 'body_thud') {
+      beep(70, 0, 0.35, 'sine', 0.6);
+      beep(45, 0.03, 0.4, 'triangle', 0.4);
+    } else if (slot === 'jump') beep(180, 0, 0.12, 'sine', 0.12);
+    else if (slot === 'tag_set') {
+      beep(1320, 0, 0.08, 'triangle', 0.14);
+      beep(1760, 0.07, 0.16, 'triangle', 0.14);
+    } else if (slot === 'camera_shutter') {
+      beep(3200, 0, 0.03, 'square', 0.08);
+      beep(2100, 0.06, 0.04, 'square', 0.08);
+    } else if (slot === 'mayday') for (let i = 0; i < 3; i++) beep(1400, i * 0.3, 0.22, 'square', 0.14);
   }
 
   setMuted(m: boolean) {

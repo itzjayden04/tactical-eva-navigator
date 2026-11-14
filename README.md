@@ -11,20 +11,23 @@ There are no modes. There's no training mode, VR mode or AR mode, only the astro
 > **Use Google Chrome or Microsoft Edge on a laptop or desktop with a webcam and microphone.**
 > Firefox can't do voice commands, and Safari's support is unreliable.
 
-1. **Open the live link:** `https://<your-site>.netlify.app` _(fill in after deploying)_.
+1. **Open the live link:** https://tactical-eva-navigator.netlify.app/
 2. **Allow the camera and microphone** when the browser asks. TEVAN uses your laptop's built-in webcam, so no extra hardware is needed.
-3. Click **"Calibrate gaze & begin EVA"** and follow the dot with your eyes for about 10 seconds. Keep your head still.
-4. You're on Mars. Walk with **W A S D** (Shift to sprint), **drag the mouse** to look around, and **scroll** to zoom.
-5. **Talk to TEVAN.** It is always listening, so there's no button to press. Start with:
+3. Click **"Calibrate gaze & begin EVA"**. After a **3, 2, 1 countdown**, follow the dot with your eyes (13 dots, then 3 check dots, about 30 seconds). Keep your head still.
+4. **Voice check:** stay quiet for a second, then say **"Hi TEVAN"**. TEVAN measures your room noise, your voice level and pitch, and learns how the browser spells "TEVAN" for your voice.
+5. You're on Mars. Walk with **W A S D** (Shift to sprint), **Space** to jump, **drag the mouse** to look around, and **scroll** to zoom. Follow the blue **ground arrows**.
+6. **Talk to TEVAN.** It is always listening, so there's no button to press. Start with:
    - "what can I say"
-   - "vitals"
-   - "show radiation"
-   - "reroute"
-   - "mark sample"
-   - "launch drone"
+   - look at a rock, the ground, your crewmate or the habitat and say **"what is this"**
+   - look at something and say **"label this as a hazard"** (or just "label this" and TEVAN asks what it is)
+   - "call for help", "back to habitat", "nearest shelter", "go to cache", "rest"
+   - "vitals", "show radiation", "reroute", "mark sample", "launch drone"
+   - "show log", "repeat that", "undo", "tools"
    - look at a feature (an oxygen ring, the radar, a dock icon) and say **"launch this feature"** or **"check this feature's progress"**
 
-No camera, or you'd rather skip calibration? Click **"Begin without gaze"**, and the mouse pointer then stands in for your eyes.
+The camera and microphone icons at the top turn **green** while they are working and stay **dim grey** when they are not. Hover them for the reason.
+
+No camera, or you'd rather skip calibration? Click **"Begin without gaze"**, and the mouse pointer then stands in for your eyes. Every calibration screen has a **Skip** button. Say **"voice check"** during the EVA to repeat the voice check, and **"calibrate"** to redo the gaze calibration.
 
 ### Tips for good gaze tracking
 
@@ -79,6 +82,42 @@ Choose either option.
 - **Connect the repo:** on app.netlify.com choose *Add new site → Import from Git → tactical-eva-navigator*. The settings come from `netlify.toml` (build `npm run build`, publish `dist`).
 - **Drag and drop:** run `npm run build` locally, then drag the `dist/` folder onto https://app.netlify.com/drop.
 
+## What's new in v2
+
+**An active guardian, not a passive display.** TEVAN watches the astronaut and the terrain and acts:
+
+| Situation | What TEVAN does |
+|---|---|
+| Dust storm front (after the first sample) | Warns 90 s ahead, turns on stability assist, slows the pace or holds you in place, releases assist when the storm passes |
+| Marsquake (after the second sample) | Shakes the view, drops rockfall that **closes a traverse**, replans the route home before asking you, offers a drone scout of the new route |
+| Oxygen or battery below normal (45% / 30%) | Compares options with numbers: nearest **supply cache** (guided off-road around boulders), return to habitat, or slow pace / shed loads |
+| Half oxygen, oxygen below reserve, low cooling water | Spoken reminder with the forecast at the habitat and the nearest cache |
+| Fall | "Are you OK?" card with a 15 s timer. No answer means TEVAN sends a **mayday** with your position. Two falls turn stability assist on |
+| Entering a hazard zone | Spoken warning, stability assist on, off again when you leave |
+| High heart rate or core temperature | Suggests "rest" or "slow pace" |
+| Path blocked | Tells you to jump a low rock (Space) or follow the arrows around a boulder or steep slope |
+| Loss of signal while calling for help | Launches the drone as a relay automatically |
+
+"Increase suit gravity" isn't physically possible, so TEVAN does the real-world equivalent: **stability assist** braces the suit's joints, cuts stumble risk by about 70% and caps speed.
+
+**Emergency quick actions** (the red SOS icon, or by voice): Call for help, Back to habitat, Nearest shelter, Resupply, Rest 5 min, Stability assist.
+
+**Tags.** Look at anything and say "label this". TEVAN outlines what you're looking at, asks what it is if it can't tell, and pins a coloured tag: teammate (blue), habitat (green), destination (pink), hazard (red), sample (cyan), resource (amber), note (lilac). A tag on your crewmate EV-2 follows them as they move. "Go to tag" navigates there; "remove tag" and "undo" take it back.
+
+**"What is this".** Look at a boulder, the ground, a cache, the habitat, EV-2 or the rover and ask. TEVAN outlines it and answers out loud: size and whether you can jump it, slope and footing, dose rate, which traverse it's on, cache contents, and so on. This is all computed from the map data, so **no AI API or key is needed**.
+
+**AR ground arrows.** The arrows follow a live A* path from your feet: around boulders, rubble and slopes over 31°, along the cheapest ground, through each waypoint. They change the moment you reroute, divert to a cache or tag, or the terrain changes. Pink arrows mean an off-route destination, amber means an emergency route.
+
+**Real terrain.** Boulders block you (you slide around them), low rocks can be jumped with Space (about 0.8 m, 1.3 s of Mars hang time), slopes over 34° can't be climbed, and loose rock, slope, sprinting, dust and fatigue can make you **stumble or fall**. The camera jolts, drops to the ground and gets back up.
+
+**Status visibility, traceability, interactivity, repeatability.**
+- Everything that is "on" shows as a chip under the vitals (navigation target, stability assist, storms, blocked traverses, poor footing, help en route).
+- "Show log" opens the mission log with the full conversation: what you said, what TEVAN said, EV-2 and the habitat. "Export log" on the debrief saves it as JSON with tags, photos and comms.
+- Every action works by voice, by gaze + "launch this", or by click.
+- The scenario is seeded: the same choices always give the same boulders, events and outcomes. "Repeat that" replays the last spoken line.
+
+**Tools** (dock icon or "tools"): Team (EV-2 and rover positions, comms link), Supplies (caches), Systems (mic, camera, comms, faults), Weather (dust, radiation, seismic), Tags, Log, Photo, What is this.
+
 ## How the astronaut uses it
 
 | Input | Does |
@@ -86,6 +125,7 @@ Choose either option.
 | **Voice** (always listening) | Every command, hands-free. Say "what can I say" to list them. |
 | **Eyes** (webcam gaze) | Look at a feature, then say **"launch this feature"** or **"check this feature's progress"** |
 | W A S D, Shift | Walk, strafe, sprint |
+| Space | Jump (clears rocks under 0.7 m) |
 | Mouse drag, arrow keys | Look around |
 | Mouse wheel | Optical zoom, 1–6× (double-click resets) |
 | Click a feature | Same as looking at it and saying "launch this" (fallback) |
@@ -100,13 +140,18 @@ Choose either option.
 - **Suit:** "vitals", "check oxygen", "battery status", "how is my fatigue", "slow pace"
 - **Drone:** "launch drone", "recall drone", "drone relay", "check drone progress"
 - **Science:** "mark sample"
-- **Visor:** "zoom in / out", "reset zoom", "calibrate", "mute", "stop listening" / "resume listening"
+- **Emergency:** "call for help" / "mayday", "back to habitat", "nearest shelter", "go to cache", "resupply", "rest", "stability on / off", "resume mission", "cancel navigation"
+- **Look and ask:** "what is this", "label this (as hazard / teammate / destination / …)", "remove tag", "go to tag", "take me to my teammate"
+- **Tools:** "tools", "team status", "show supplies", "system status", "how is the weather", "show tags", "show log", "take a photo", "where am I"
+- **Traceability:** "repeat that", "undo"
+- **Visor:** "zoom in / out", "reset zoom", "calibrate", "voice check", "mute", "stop listening" / "resume listening", "jump"
+- You can start any command with "TEVAN", e.g. "Hey TEVAN, show radiation".
 
 The parser (`src/ui/voice.ts`) is a deterministic grammar, so the same words always give the same command. No LLM or API key is needed.
 
 ### Gaze
 
-`src/ui/gaze.ts` runs MediaPipe Face Landmarker in the browser, tracking one face (`numFaces: 1`). It uses iris position inside each eye opening, plus head yaw and pitch, as features. A 9-dot calibration before egress fits a ridge regression from those features to screen position, and a One Euro filter smooths the result. Without calibration, TEVAN falls back to head pointing. `src/ui/targets.ts` snaps the gaze point to the nearest `data-gaze` element. A target has to hold for 160 ms before it locks, and "this" refers to whatever was locked while you were speaking, up to 2.5 s earlier. No video leaves the device.
+`src/ui/gaze.ts` runs MediaPipe Face Landmarker in the browser, tracking one face (`numFaces: 1`). It uses iris position inside each eye opening, plus head yaw and pitch, as features. Calibration starts after a 3-second countdown and shows 13 dots. Blink frames are dropped, each dot's samples are filtered against their median, and a ridge regression with quadratic terms maps features to screen position. Three unseen check dots then measure the real error and remove any constant offset, and TEVAN reports the accuracy honestly (Good / Fair / Low). A One Euro filter smooths the result. Without calibration, TEVAN falls back to head pointing. `src/ui/targets.ts` snaps the gaze point to the nearest `data-gaze` element. A target has to hold for 160 ms before it locks, and "this" refers to whatever was locked while you were speaking, up to 2.5 s earlier. No video leaves the device.
 
 The WASM runtime is copied from `node_modules` into `public/mediapipe/` on `predev` and `prebuild`. The face model is in `public/models/`. If either is missing, the app loads them from the official CDN.
 
@@ -140,6 +185,8 @@ Demo-operator keys (not part of the astronaut UX): `[` and `]` change time warp.
 src/
   data/            DATA CONTRACT (swap point for NASA data, ?data=<name>)
   core/            framework-free engine: route graph + metrics, health model, forecast, sim
+  core/terrain.ts  boulders, traversability grid, A* guide path, stumble risk
+  core/guardian.ts active responses (storm, quake, consumables, falls, geofence), tags, describe, crew
   render/scene.ts  Three.js world, chevrons, drone + PIP camera, curved visor lens pass, zoom
   ui/hud.ts        visor HUD (dynamic island, halos, radar, dock, detail cards); bound by element IDs
   ui/map.ts        tactical map + heading-up radar
