@@ -190,6 +190,9 @@ export class TrackWorld {
     return { distance, gain, loss, maxSlopeDeg: maxSlope, estTimeS: time };
   }
 
+  /** edges closed by an event (e.g. rockfall); every path search skips them */
+  blocked = new Set<string>();
+
   /** Dijkstra by distance. */
   shortestPath(from: string, to: string): Leg[] | null {
     if (from === to) return [];
@@ -206,6 +209,7 @@ export class TrackWorld {
       open.delete(u);
       if (u === to) break;
       for (const leg of this.adj.get(u)!) {
+        if (this.blocked.has(leg.edgeId)) continue;
         const v = this.legTo(leg);
         const nd = best + this.legLength(leg);
         if (nd < (dist.get(v) ?? Infinity)) {
@@ -236,6 +240,7 @@ export class TrackWorld {
       }
       if (path.length >= maxLegs) return;
       for (const leg of this.adj.get(node)!) {
+        if (this.blocked.has(leg.edgeId)) continue;
         const v = this.legTo(leg);
         if (seen.has(v)) continue;
         seen.add(v);

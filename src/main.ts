@@ -2,18 +2,19 @@ import { selectProvider } from './data';
 import type { DataBundle } from './data/types';
 import { Sim } from './core/sim';
 import { World } from './render/scene';
-import { Hud, fmtDur, fmtMET, FEATURE_LABEL, km, esc } from './ui/hud';
+import { Hud, fmtDur, fmtMET, FEATURE_LABEL, TAG_ACTS, km, esc } from './ui/hud';
 import { TacticalMap, LayerId, LAYER_INFO } from './ui/map';
 import { drawChart } from './ui/chart';
 import { Audio } from './ui/audio';
-import { Voice, parseCommand, Command, FeatureId, VOICE_ERRORS } from './ui/voice';
+import { Voice, MicMeter, parseCommand, normalise, WAKE_ALIASES, Command, FeatureId, VOICE_ERRORS } from './ui/voice';
+import { Guardian, TAG_INFO, bearingWord, type Pick, type TagKind } from './core/guardian';
 import { GazeTracker } from './ui/gaze';
 import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const FEATURES: FeatureId[] = ['mission', 'o2', 'h2o', 'power', 'dose', 'fatigue', 'map', 'route', 'drone', 'sample', 'layers'];
+const FEATURES: string[] = ['mission', 'o2', 'h2o', 'power', 'dose', 'fatigue', 'map', 'route', 'drone', 'sample', 'layers', 'tools', 'emergency', 'team', 'supplies', 'systems', 'weather', 'tags', 'log'];
 
 async function boot() {
   const provider = selectProvider();
@@ -31,7 +32,12 @@ async function boot() {
   const voice = new Voice();
   const gaze = new GazeTracker();
   const targets = new Targeting();
-  (window as any).__tevan = { sim, world, hud, voice, gaze, targets };
+  const guardian = new Guardian(sim);
+  const meter = new MicMeter();
+  world.attachGuardian(guardian);
+  hud.guardian = guardian;
+  hud.map.guardian = guardian;
+  (window as any).__tevan = { sim, world, hud, voice, gaze, targets, guardian, meter };
 
   // ---------------------------------------------------------------- pre-egress screen
   const m = data.mission;
@@ -58,6 +64,7 @@ async function boot() {
   const lm = `${String(Math.floor(m.startLmstH)).padStart(2, '0')}:${String(Math.round((m.startLmstH % 1) * 60)).padStart(2, '0')}`;
   $('brief-conditions').textContent = `Sol ${m.sol} · ${lm} LMST · ${cond.surfaceTempC} °C · dust τ ${cond.dustTau} · GCR ${cond.gcrDoseRateuSvH} µSv/h · SPE watch`;
   const briefMap = new TacticalMap(data, sim);
+  briefMap.guardian = guardian;
   briefMap.layers.fog = false;
   briefMap.layers.radiation = true;
   const chk = (id: string, cls: string, text: string) => {
@@ -102,17 +109,27 @@ async function boot() {
     if (voice.asleep) return;
     setCapsule('hearing', t);
   };
+  /** TEVAN answers out loud; every spoken line is also written to the log (traceability, "repeat that"). */
+  const speak = (text: string) => {
+    guardian.record('tevan', text);
+    guardian.lastSaid = text;
+    voice.speak(text);
+  };
+  sim.on('say', (m: { text: string; who: string }) => voice.speak(m.text));
   voice.onFinal = (t) => {
-    const cmd = parseCommand(t);
+    if (voiceCheck) return; // the "Hi TEVAN" check is listening, not the command parser
+    const cmd = parseCommand(t, voice.aliases);
     if (voice.asleep && cmd?.type !== 'wake') return;
     if (!cmd) {
       setCapsule('miss', t, 1800);
       return;
     }
+    if (sim.status === 'active') guardian.record('you', t);
     const reply = exec(cmd, 'voice');
     setCapsule('ok', reply.text || t, 2600);
     audio.play('voice_ack');
-    if (reply.speak) voice.speak(reply.speak);
+    if (reply.speak) speak(reply.speak);
+    else if (reply.text && sim.status === 'active') guardian.record('tevan', reply.text);
   };
 
   // ---------------------------------------------------------------- gaze
@@ -153,12 +170,39 @@ async function boot() {
       }
     }
   };
+  let skipCalib = false;
+  let voiceCheck = false;
+  $('calib-skip').onclick = () => (skipCalib = true);
+  const FAST = new URLSearchParams(location.search).has('skipchecks');
+  const med = (v: number[]) => [...v].sort((x, y) => x - y)[Math.floor(v.length / 2)] ?? 0;
+  /** wait, but return early (true) if the person pressed Skip */
+  const waitOrSkip = async (ms: number) => {
+    const end = performance.now() + ms;
+    while (performance.now() < end && !skipCalib) await sleep(30);
+    return skipCalib;
+  };
+  const countdown = async () => {
+    const c = $('calib-count');
+    for (const n of ['3', '2', '1']) {
+      c.textContent = n;
+      c.classList.remove('tick');
+      void c.offsetWidth;
+      c.classList.add('tick');
+      audio.play('ui_click');
+      if (await waitOrSkip(1000)) break;
+    }
+    c.textContent = '';
+    c.classList.remove('tick');
+  };
   const runCalibration = async (): Promise<number | null> => {
     calibrating = true;
+    skipCalib = false;
     const scr = $('calib');
     const dot = $('calib-dot');
     const txt = $('calib-text');
-    scr.classList.remove('hidden');
+    scr.classList.remove('hidden', 'running');
+    $('calib-voice').classList.add('hidden');
+    $('calib-cam').classList.remove('hidden');
     let alive = true;
     const pv = () => {
       if (!alive) return;
@@ -170,46 +214,188 @@ async function boot() {
     $('calib-title').textContent = 'Gaze calibration';
     txt.textContent = 'Looking for your face. Sit about an arm’s length from the screen, face lit from the front.';
     const t0 = performance.now();
-    while (gaze.state !== 'tracking' && performance.now() - t0 < 15000) {
+    while (gaze.state !== 'tracking' && performance.now() - t0 < 15000 && !skipCalib) {
       if (gaze.state === 'denied' || gaze.state === 'error') break;
       await sleep(100);
     }
     let result: number | null = null;
-    if (gaze.state === 'tracking') {
-      txt.textContent = 'Follow the dot with your eyes. Keep your head still.';
+    if (gaze.state === 'tracking' && !skipCalib) {
+      $('calib-title').textContent = 'Get ready';
+      txt.textContent = 'Face found. Keep your head still and follow the dot with your eyes only. 13 dots, about 25 seconds.';
+      await countdown();
+    }
+    if (gaze.state === 'tracking' && !skipCalib) {
+      $('calib-title').textContent = 'Follow the dot';
+      txt.textContent = 'Eyes only. Blinking is fine.';
+      scr.classList.add('running');
       const W = window.innerWidth;
       const H = window.innerHeight;
-      const pts: [number, number][] = [];
-      for (const fy of [0.14, 0.5, 0.86]) for (const fx of [0.1, 0.5, 0.9]) pts.push([fx * W, fy * H]);
-      pts.sort(() => 0); // reading order
+      // centre first, then the rim, with four inner points: 13 dots
+      const F: [number, number][] = [[0.5, 0.5], [0.08, 0.12], [0.5, 0.1], [0.92, 0.12], [0.72, 0.3], [0.93, 0.5], [0.92, 0.88], [0.72, 0.7], [0.5, 0.9], [0.08, 0.88], [0.28, 0.7], [0.07, 0.5], [0.28, 0.3]];
       gaze.beginCalibration();
       dot.style.opacity = '1';
-      for (const [x, y] of pts) {
+      for (const [fx, fy] of F) {
+        if (skipCalib) break;
+        const x = fx * W;
+        const y = fy * H;
         dot.style.transform = `translate(${x}px, ${y}px)`;
         dot.classList.remove('collect');
-        await sleep(650);
+        await sleep(720); // let the eyes land and settle before sampling
         dot.classList.add('collect');
-        const end = performance.now() + 900;
+        const end = performance.now() + 880;
         while (performance.now() < end) {
           gaze.addCalibrationSample(x, y);
-          await sleep(33);
+          await sleep(30);
         }
       }
+      result = skipCalib ? null : gaze.finishCalibration();
+      let line = '';
+      if (result !== null) {
+        // validation: three dots it has not seen; their mean miss is removed as a constant offset
+        $('calib-title').textContent = 'Checking accuracy';
+        const res: [number, number][] = [];
+        for (const [fx, fy] of [[0.3, 0.42], [0.7, 0.58], [0.5, 0.76]] as [number, number][]) {
+          if (skipCalib) break;
+          const x = fx * W;
+          const y = fy * H;
+          dot.style.transform = `translate(${x}px, ${y}px)`;
+          dot.classList.remove('collect');
+          await sleep(700);
+          dot.classList.add('collect');
+          const xs: number[] = [];
+          const ys: number[] = [];
+          const end = performance.now() + 650;
+          while (performance.now() < end) {
+            const r = gaze.rawPoint();
+            if (r) {
+              xs.push(r.x);
+              ys.push(r.y);
+            }
+            await sleep(30);
+          }
+          if (xs.length > 4) res.push([med(xs) - x, med(ys) - y]);
+        }
+        if (res.length >= 2) {
+          const mx = res.reduce((a, r) => a + r[0], 0) / res.length;
+          const my = res.reduce((a, r) => a + r[1], 0) / res.length;
+          gaze.applyBias(mx, my);
+          result = res.reduce((a, r) => a + Math.hypot(r[0] - mx, r[1] - my), 0) / res.length;
+          gaze.accuracyPx = result;
+        }
+        const q = result < 90 ? 'Good' : result < 170 ? 'Fair' : 'Low';
+        line = `${q} accuracy: about ${Math.round(result)} px on unseen points.${q === 'Low' ? ' Light your face from the front, keep your head still, then say “calibrate” to redo.' : ' Look at a feature and say “launch this”.'}`;
+      }
       dot.style.opacity = '0';
-      result = gaze.finishCalibration();
+      scr.classList.remove('running');
       $('calib-title').textContent = result === null ? 'Calibration incomplete' : 'Gaze calibrated';
-      txt.textContent = result === null ? 'Your face was lost too often. Using head pointing instead. Say “calibrate” to try again.' : `Average error about ${Math.round(result)} px. Look at a feature and say “launch this”.`;
+      txt.textContent = result === null ? 'Not enough clean samples. Using head pointing instead. Say “calibrate” to try again.' : line;
       if (result === null) gaze.recentre();
-      await sleep(1600);
-    } else {
+      await waitOrSkip(2200);
+    } else if (!skipCalib) {
       $('calib-title').textContent = 'Gaze unavailable';
       txt.textContent = gaze.lastError || (gaze.state === 'noface' ? 'Camera is on but no face was found. Face the camera with light in front of you, then say “calibrate”.' : gaze.state === 'starting' ? 'The eye-tracking model is still loading. Say “calibrate” in a moment.' : 'The pointer will stand in for your eyes.');
-      await sleep(4000);
+      await waitOrSkip(4000);
     }
     alive = false;
     scr.classList.add('hidden');
     calibrating = false;
     return result;
+  };
+
+  /**
+   * Voice check: "Hi TEVAN". Measures the room noise and the person's speaking level and pitch
+   * from the real microphone, and learns how the browser's recogniser spells "TEVAN" for this
+   * voice, so the wake word works for them. (Browsers do not allow training the recogniser itself.)
+   */
+  const runVoiceCheck = async () => {
+    calibrating = true;
+    voiceCheck = true;
+    skipCalib = false;
+    const scr = $('calib');
+    const txt = $('calib-text');
+    scr.classList.remove('hidden', 'running');
+    $('calib-dot').style.opacity = '0';
+    $('calib-cam').classList.add('hidden');
+    $('calib-voice').classList.remove('hidden');
+    $('calib-heard').textContent = '';
+    $('calib-title').textContent = 'Voice check';
+    txt.textContent = 'Stay quiet for a moment while TEVAN measures the room noise.';
+    const ok = await meter.start();
+    const bar = $('calib-meter').firstElementChild as HTMLElement;
+    const mark = $('calib-meter').lastElementChild as HTMLElement;
+    const pct = (db: number) => `${Math.max(0, Math.min(1, (db + 75) / 65)) * 100}%`;
+    let alive = true;
+    const loop = () => {
+      if (!alive) return;
+      meter.sample();
+      bar.style.width = ok ? pct(meter.db) : '0%';
+      requestAnimationFrame(loop);
+    };
+    loop();
+    const noise: number[] = [];
+    let t0 = performance.now();
+    while (performance.now() - t0 < 1100 && !skipCalib) {
+      noise.push(meter.db);
+      await sleep(40);
+    }
+    if (ok && noise.length > 5) meter.noiseDb = med(noise);
+    mark.style.left = pct(meter.noiseDb + 10);
+    txt.textContent = 'Now say “Hi TEVAN” in your normal voice.';
+    let heard = '';
+    let finalAt = 0;
+    voice.onHeard = (t, f) => {
+      heard = t;
+      $('calib-heard').innerHTML = `Heard: <b>${esc(t)}</b>`;
+      if (f) finalAt = performance.now();
+    };
+    const speech: number[] = [];
+    const pitches: number[] = [];
+    let lastLoud = 0;
+    t0 = performance.now();
+    while (performance.now() - t0 < 9000 && !skipCalib) {
+      const now = performance.now();
+      if (ok && meter.db > meter.noiseDb + 10) {
+        speech.push(meter.db);
+        const p = meter.pitch();
+        if (p) pitches.push(p);
+        lastLoud = now;
+      }
+      if (finalAt && now - finalAt > 450) break;
+      const noText = !voice.supported || voice.state === 'denied' || voice.state === 'error';
+      if (noText && speech.length > 12 && now - lastLoud > 900) break;
+      await sleep(30);
+    }
+    voice.onHeard = () => {};
+    const speechDb = speech.length > 6 ? [...speech].sort((a, b) => a - b)[Math.floor(speech.length * 0.8)] : null;
+    const snr = speechDb !== null ? speechDb - meter.noiseDb : null;
+    const pitch = pitches.length >= 4 ? med(pitches) : null;
+    let learned = '';
+    const name = normalise(heard).replace(/^(hi|hey|hello|high|hay|ok|okay|hi there) /, '').trim();
+    if (name && name.split(' ').length <= 2 && !WAKE_ALIASES.includes(name) && !parseCommand(name)) {
+      voice.aliases.push(name);
+      learned = name;
+    }
+    if (pitch) voice.replyPitch = pitch < 165 ? 1.2 : 0.8;
+    const lines: string[] = [];
+    if (heard) lines.push(`Heard “${heard}”.${learned ? ` TEVAN will also answer to “${learned}” for your voice.` : ''}`);
+    else if (!voice.supported) lines.push('This browser has no speech recognition. Use Chrome or Edge, or press Enter to type commands.');
+    else lines.push(VOICE_ERRORS[voice.lastError] ?? 'No words came back from the recogniser. The bubble beside the top pill shows what TEVAN hears during the EVA.');
+    if (snr !== null) lines.push(`Your voice is ${snr.toFixed(0)} dB above the room noise: ${snr >= 20 ? 'clear' : snr >= 12 ? 'usable, speak up a little' : 'weak, move closer or use a headset'}.`);
+    else if (!ok) lines.push('Could not read the microphone level.');
+    if (pitch) lines.push(`Pitch about ${pitch.toFixed(0)} Hz, so TEVAN replies in a ${pitch < 165 ? 'higher' : 'lower'} voice that is easy to tell apart from yours.`);
+    $('calib-title').textContent = heard ? 'Voice check complete' : speechDb !== null ? 'Voice level measured' : 'No voice detected';
+    txt.textContent = lines.join(' ');
+    const profile = { heard, learnedAlias: learned, noiseDb: Math.round(meter.noiseDb), speechDb: speechDb === null ? null : Math.round(speechDb), pitchHz: pitch ? Math.round(pitch) : null };
+    sim.extra.voiceCheck = profile;
+    console.info('[TEVAN voice check]', profile);
+    if (heard) voice.speak('Hi. I hear you. Voice check complete.');
+    await waitOrSkip(heard ? 3200 : 4200);
+    alive = false;
+    scr.classList.add('hidden');
+    $('calib-voice').classList.add('hidden');
+    $('calib-cam').classList.remove('hidden');
+    calibrating = false;
+    voiceCheck = false;
   };
 
   // ---------------------------------------------------------------- egress
@@ -224,19 +410,21 @@ async function boot() {
     if (withGaze) {
       await gazeReady;
       $('briefing').classList.add('hidden');
-      await runCalibration();
+      if (!FAST) await runCalibration();
     }
     $('briefing').classList.add('hidden');
+    if (!FAST) await runVoiceCheck();
+    else void meter.start();
     $('hud').classList.remove('hidden');
     sim.start(false);
     hud.refreshStatic();
     const hint = $('hint-line');
     hint.innerHTML = voice.supported
-      ? 'Say <b>“what can I say”</b> · look at any feature and say <b>“launch this”</b> or <b>“check this feature’s progress”</b>'
-      : 'Voice needs Chrome or Edge here. Press <b>Enter</b> to type commands · click a feature to launch it';
+      ? 'Say <b>“what can I say”</b> · look at anything and say <b>“what is this”</b> or <b>“label this”</b> · <b>Space</b> jumps'
+      : 'Voice needs Chrome or Edge here. Press <b>Enter</b> to type commands · click a feature to launch it · <b>Space</b> jumps';
     hint.classList.add('show');
-    setTimeout(() => hint.classList.remove('show'), 14000);
-    hud.notify('Egress complete. Walk with W A S D, drag to look, scroll to zoom.', 'directions_walk', 6);
+    setTimeout(() => hint.classList.remove('show'), 16000);
+    hud.notify('Egress complete. Follow the ground arrows. W A S D to walk, Space to jump, drag to look.', 'directions_walk', 7);
   };
   $('btn-begin').onclick = () => begin(true);
   $('btn-skip-calib').onclick = () => begin(false);
@@ -255,6 +443,9 @@ async function boot() {
     if (last?.kind === 'hazard') audio.play('alert_caution');
   });
   sim.on('end', () => showDebrief());
+  sim.on('trip', (t: { kind: string }) => audio.play(t.kind === 'fall' ? 'body_thud' : 'ui_click'));
+  sim.on('jump', () => audio.play('jump'));
+  sim.on('obstacles', () => audio.play('alert_warning'));
   hud.onIslandOpen = () => audio.play('island_open');
 
   // ---------------------------------------------------------------- features: launch / progress
@@ -318,7 +509,17 @@ async function boot() {
       case 'map-close':
         openMap(false);
         return { text: 'Navigator closed' };
+      case 'log':
+        hud.setLog(true);
+        return { text: 'Mission log open' };
+      case 'log-close':
+        hud.setLog(false);
+        return { text: 'Log closed' };
     }
+    if (['tools', 'emergency', 'team', 'supplies', 'systems', 'weather', 'tags'].includes(id)) return tool(id);
+    if (id.startsWith('tool:')) return id === 'tool:log' ? (hud.setLog(true), { text: 'Mission log open' }) : tool(id.slice(5));
+    if (id.startsWith('act:')) return act(id.slice(4));
+    if (id.startsWith('tagkind:')) return finishTag(id.slice(8) as TagKind);
     if (id.startsWith('opt:')) return option(Number(id.slice(4)) + 1);
     if (id.startsWith('layer:')) return layer(id.slice(6) as LayerId);
     return { text: `Nothing to launch on ${featureLabel(id)}` };
@@ -375,6 +576,12 @@ async function boot() {
         title: 'Say…',
         big: '',
         rows: [
+          ['Look + “what is this”', 'TEVAN identifies it'],
+          ['Look + “label this (as hazard)”', 'coloured tag, follows movers'],
+          ['“Call for help” · “back to habitat”', 'emergency (or the SOS icon)'],
+          ['“Nearest shelter” · “go to cache” · “rest”', 'emergency actions'],
+          ['“Show log” · “repeat that” · “undo”', 'traceability'],
+          ['“Tools” · “team” · “weather” · “systems”', 'more features'],
           ['Look + “launch this”', 'open / run what you look at'],
           ['Look + “check this feature’s progress”', 'live status card'],
           ['“Show / hide radiation”', 'slope · POI · dust · magnetic'],
@@ -392,7 +599,109 @@ async function boot() {
       }),
       14,
     );
-    return { text: 'Commands shown above', speak: 'Look at a feature and say launch this, or check this feature’s progress. Or say vitals, reroute, mark sample, or show radiation.' };
+    return { text: 'Commands shown above', speak: 'Look at anything and say what is this, or label this. Say call for help or back to habitat in an emergency. Say tools for everything else.' };
+  };
+
+  // ---------------------------------------------------------------- v2: tools, emergency actions, tags, "what is this"
+  const tool = (id: string): Reply => {
+    const d = hud.featureDetail(id);
+    hud.showDetail(id, () => hud.featureDetail(id), id === 'tools' || id === 'emergency' ? 14 : 10);
+    return { text: d.title + (d.big ? `: ${d.big}` : ''), speak: d.speech };
+  };
+  const act = (a: string): Reply => {
+    switch (a) {
+      case 'help':
+        hud.closeDetail();
+        audio.play('mayday');
+        return say(guardian.callHelp());
+      case 'habitat':
+        hud.closeDetail();
+        return say(guardian.backToHabitat());
+      case 'shelter':
+        hud.closeDetail();
+        return say(guardian.toShelter());
+      case 'cache':
+        hud.closeDetail();
+        return say(guardian.goToCache());
+      case 'resupply':
+        return say(guardian.resupply());
+      case 'rest':
+        hud.closeDetail();
+        return say(guardian.rest());
+      case 'resume':
+        return say(guardian.resumeMission());
+      case 'cancelNav':
+        sim.clearDetour();
+        return say('Navigation cancelled. Back on the mission plan.');
+      case 'stability':
+        return say(guardian.stability());
+      case 'photo':
+        return photo();
+      case 'what':
+        return whatIsThis();
+    }
+    return { text: `Unknown action ${a}` };
+  };
+  /** what the eyes (or pointer) are on in the WORLD right now, remembered briefly like feature targets */
+  let lastPick: { p: Pick; at: number } | null = null;
+  const worldPick = (): Pick | null => {
+    const gp = gaze.state === 'tracking' && gaze.point ? gaze.point : pointer ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const p = world.pick(gp.x, gp.y);
+    if (p.type !== 'sky') return p;
+    if (lastPick && performance.now() - lastPick.at < 2500) return lastPick.p;
+    return p;
+  };
+  const whatIsThis = (): Reply => {
+    const p = worldPick();
+    if (!p) return { text: 'Look at something first' };
+    hud.focus = p;
+    hud.confirmFocus();
+    focusHoldUntil = performance.now() + 3000;
+    const card = guardian.describe(p);
+    hud.showDetail('what', () => card, 10);
+    return { text: card.title, speak: card.speech };
+  };
+  let pendingTag: Pick | null = null;
+  const labelThis = (kind?: TagKind): Reply => {
+    const p = worldPick();
+    if (!p || p.type === 'sky') return say('Look at something on the ground first, then say label this.');
+    if (p.type === 'tag') return say(`That is already tagged as ${p.name}.`);
+    hud.focus = p;
+    hud.confirmFocus();
+    const k = kind ?? guardian.suggestKind(p);
+    if (k) {
+      pendingTag = p;
+      return finishTag(k);
+    }
+    pendingTag = p;
+    hud.showDetail('tagkind', () => ({ icon: 'sell', title: `Label ${p.type === 'boulder' ? p.name.toLowerCase() : 'this spot'} as…`, big: km(p.dist), rows: [], acts: TAG_ACTS, cols: 4, speech: '', hint: 'Say the type (“hazard”, “destination”…), or look at one and say “launch this”.' }), 15);
+    return { text: 'What is it?', speak: 'What is it? Teammate, habitat, destination, hazard, sample, resource, or note?' };
+  };
+  const finishTag = (k: TagKind): Reply => {
+    const p = pendingTag;
+    if (!p) return labelThis(k);
+    pendingTag = null;
+    const t = guardian.addTag(k, p);
+    audio.play('tag_set');
+    hud.closeDetail();
+    const me = sim.position();
+    const pos = guardian.tagPos(t);
+    return say(`Tagged ${TAG_INFO[k].label.toLowerCase()}: ${t.label}, ${Math.round(Math.hypot(pos.e - me.e, pos.n - me.n))} metres ${bearingWord(pos.e - me.e, pos.n - me.n)}.${t.follow ? ' The tag follows it as it moves.' : ''}${k === 'destination' ? ' Say go to tag to navigate there.' : ''}`);
+  };
+  const photo = (): Reply => {
+    const img = world.snapshot();
+    const p = sim.position();
+    const hd = world.heading();
+    const caption = `Photo ${guardian.photos.length + 1}`;
+    guardian.photos.push({ met: sim.met, e: p.e, n: p.n, headingDeg: Math.round(hd), caption, thumb: img });
+    sim.addLog({ kind: 'info', title: `${caption} taken`, severity: 'info', outcome: `E${p.e.toFixed(0)} N${p.n.toFixed(0)} · heading ${hd.toFixed(0)}°` });
+    audio.play('camera_shutter');
+    const fl = $('photo-flash');
+    fl.classList.remove('go');
+    void fl.offsetWidth;
+    fl.classList.add('go');
+    hud.showDetail('photo', () => ({ icon: 'photo_camera', title: caption, big: `${hd.toFixed(0)}°`, rows: [['Position', `E${p.e.toFixed(0)} N${p.n.toFixed(0)}`], ['Mission time', fmtMET(sim.met)]], img, speech: '' }), 5);
+    return { text: `${caption} saved to the log`, speak: 'Photo saved.' };
   };
 
   const exec = (cmd: Command, source: 'voice' | 'typed'): Reply => {
@@ -476,6 +785,11 @@ async function boot() {
         break;
       }
       case 'calibrate':
+        if (cmd.what === 'voice') {
+          void runVoiceCheck();
+          r = { text: 'Voice check' };
+          break;
+        }
         if (gaze.state === 'off' || gaze.state === 'denied' || gaze.state === 'error') void gaze.start().then(runCalibration);
         else void runCalibration();
         r = { text: 'Calibrating gaze' };
@@ -501,6 +815,63 @@ async function boot() {
         voice.sleep(false);
         r = { text: 'Listening' };
         break;
+      case 'hello':
+        r = say('Hi. I’m listening. Say what can I say for the commands.');
+        break;
+      case 'whatThis':
+        r = whatIsThis();
+        break;
+      case 'labelThis':
+        r = labelThis(cmd.kind);
+        break;
+      case 'tagKind':
+        r = pendingTag ? finishTag(cmd.kind) : labelThis(cmd.kind);
+        break;
+      case 'removeTag': {
+        const t = guardian.removeTag();
+        r = say(t ? `Removed tag ${t.label}` : 'No tags to remove');
+        break;
+      }
+      case 'goTag':
+        r = say(guardian.goToTag(cmd.kind));
+        break;
+      case 'goTeammate':
+        r = say(guardian.goToTeammate());
+        break;
+      case 'emergency':
+        r = act(cmd.action);
+        break;
+      case 'stability':
+        r = say(guardian.stability(cmd.on));
+        break;
+      case 'tool':
+        r = tool(cmd.tool);
+        break;
+      case 'logPanel':
+        hud.setLog(cmd.open);
+        r = { text: cmd.open ? 'Mission log open' : 'Log closed' };
+        break;
+      case 'photo':
+        r = photo();
+        break;
+      case 'repeat':
+        r = { text: guardian.lastSaid || voice.lastSpoken || 'Nothing to repeat', speak: guardian.lastSaid || voice.lastSpoken || 'Nothing to repeat yet.' };
+        break;
+      case 'undo':
+        r = say(guardian.undo());
+        break;
+      case 'jump':
+        r = { text: sim.jump() ? 'Jump' : 'Can’t jump right now' };
+        break;
+      case 'where': {
+        const p = sim.position();
+        const hab = sim.world.nodes.get(m.startNodeId)!;
+        const d = Math.hypot(hab.e - p.e, hab.n - p.n);
+        r = say(`You are at east ${p.e.toFixed(0)}, north ${p.n.toFixed(0)}, ${Math.round(d)} metres ${bearingWord(p.e - hab.e, p.n - hab.n)} of the habitat${sim.pos.leg ? `, on the ${sim.world.edges.get(sim.pos.leg.edgeId)!.edge.name}` : ''}.`);
+        break;
+      }
+      default:
+        r = { text: 'Not understood' };
     }
     hud.refreshStatic();
     if (source === 'typed') r.speak = undefined;
@@ -529,8 +900,11 @@ async function boot() {
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') {
-      const cmd = parseCommand(input.value);
-      setCapsule(cmd ? 'ok' : 'miss', cmd ? exec(cmd, 'typed').text : `Not understood: ${input.value}`, 2600);
+      const cmd = parseCommand(input.value, voice.aliases);
+      if (cmd && sim.status === 'active') guardian.record('you', input.value);
+      const res = cmd ? exec(cmd, 'typed') : null;
+      if (res?.text && sim.status === 'active') guardian.record('tevan', res.speak ?? res.text);
+      setCapsule(cmd ? 'ok' : 'miss', res ? res.text : `Not understood: ${input.value}`, 2600);
       input.value = '';
       input.classList.add('hidden');
       input.blur();
@@ -600,6 +974,11 @@ async function boot() {
   window.addEventListener('keydown', (e) => {
     if (typing() || sim.status !== 'active') return;
     const k = e.key.toLowerCase();
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!e.repeat && !hud.mapExpanded) sim.jump();
+      return;
+    }
     if (['w', 'a', 's', 'd', 'shift', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(k)) {
       held.add(k);
       if (k.startsWith('arrow')) e.preventDefault();
@@ -673,6 +1052,9 @@ async function boot() {
       row('Peak dose rate', sim.dosePeakRate >= 1000 ? `${(sim.dosePeakRate / 1000).toFixed(1)} mSv/h` : `${sim.dosePeakRate.toFixed(0)} µSv/h`),
       row('Peak fatigue', Math.max(...sim.history.map((p) => p.fatigue), h.fatigue).toFixed(0)),
       row('Lowest O2', `${(Math.min(...sim.history.map((p) => p.o2), o2f) * 100).toFixed(0)}%`),
+      row('Footing', `${sim.stats2.stumbles} stumbles · ${sim.stats2.falls} falls · ${sim.stats2.jumps} jumps`),
+      row('Tags · photos · caches used', `${guardian.tags.length} · ${guardian.photos.length} · ${guardian.cachesUsed.size}`),
+      row('Mayday', guardian.helpCalled ? 'Called' : 'Not needed'),
     ].join('') + `<p>${speAvoided ? 'Sheltered during the solar particle event. ' : ''}Geography decided the risk: slope and surface drove metabolic cost and O2, open sky drove dose, and every route choice was shown with its forecast cost before it was taken.</p>`;
     $('debrief-rc-title').textContent = failed ? 'Root cause' : 'Navigator impact';
     if (failed) {
@@ -703,6 +1085,11 @@ async function boot() {
 
   // ---------------------------------------------------------------- loop
   const cursor = $('gaze-cursor');
+  const camInd = $('cam-ind');
+  const micInd = $('mic-ind');
+  let lastPickT = 0;
+  let focusHoldUntil = 0;
+  void focusHoldUntil;
   const zoomEl = $('zoom-readout');
   let last = performance.now();
   const frame = (now: number) => {
@@ -711,7 +1098,10 @@ async function boot() {
     if (!calibrating) {
       applyInput(dt);
       sim.update(dt);
+      guardian.update(dt);
     }
+    world.quake = guardian.quakeT > 0 ? Math.min(1, guardian.quakeT / 3) : 0;
+    audio.setLevel('quake_rumble', world.quake * 0.6);
     world.update(dt);
     world.render($('drone-pip'));
     if (sim.status === 'active') {
@@ -719,6 +1109,28 @@ async function boot() {
       // gaze → target (pointer stands in when no camera)
       const gp = gaze.state === 'tracking' && gaze.point ? gaze.point : pointer;
       targets.update(calibrating ? null : gp, now);
+      // world focus: outline what the eyes rest on in the world (only when no visor feature is locked)
+      if (now - lastPickT > 120) {
+        lastPickT = now;
+        const p = !calibrating && gp && !targets.current && !hud.mapExpanded ? world.pick(gp.x, gp.y) : null;
+        const named = p && (p.type === 'entity' || p.type === 'poi' || p.type === 'tag' || p.type === 'drone' || (p.type === 'boulder' && p.dist < 90));
+        if (p && p.type !== 'sky') lastPick = { p, at: now };
+        if (now > focusHoldUntil) hud.focus = named ? p : null;
+      }
+      // camera + mic indicators: green only when actually working, dim grey otherwise
+      const camOn = gaze.state === 'tracking';
+      camInd.dataset.state = camOn ? 'on' : gaze.state === 'denied' || gaze.state === 'error' ? 'err' : '';
+      camInd.title = camOn ? 'Camera: tracking your eyes' : gaze.state === 'noface' ? 'Camera on, no face found' : gaze.lastError || 'Camera off: pointer stands in for gaze';
+      const micOn = voice.state === 'listening' || voice.state === 'hearing';
+      micInd.dataset.state = voice.state === 'hearing' ? 'hearing' : micOn ? 'on' : '';
+      micInd.title = micOn ? 'Microphone: listening' : voice.state === 'asleep' ? 'Microphone asleep: say “resume listening”' : VOICE_ERRORS[voice.lastError] ?? 'Microphone off';
+      hud.sensors = {
+        mic: micOn ? 'Listening' : voice.state === 'asleep' ? 'Asleep' : voice.supported ? (voice.state === 'denied' ? 'Blocked' : 'Off') : 'Not supported',
+        micOk: micOn,
+        cam: camOn ? 'Tracking face' : gaze.state === 'noface' ? 'No face' : gaze.state === 'starting' ? 'Starting' : gaze.state === 'off' ? 'Off' : 'Unavailable',
+        camOk: camOn,
+        gaze: gaze.calibrated ? `Calibrated · ±${Math.round(gaze.accuracyPx)} px` : camOn ? 'Head pointing' : 'Mouse pointer',
+      };
       if (gaze.state === 'tracking' && gp) {
         cursor.style.transform = `translate(${gp.x}px, ${gp.y}px)`;
         cursor.classList.add('on');

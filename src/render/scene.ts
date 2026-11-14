@@ -7,6 +7,7 @@ import type { DataBundle } from '../data/types';
 import { sample, slopeDeg } from '../core/grid';
 import type { Sim } from '../core/sim';
 import { fbm } from '../data/mockJezero';
+import type { Guardian, Pick } from '../core/guardian';
 
 const EYE = 1.75;
 /** Base vertical field of view of the helmet visor (degrees) at 1x optical zoom. */
@@ -67,6 +68,14 @@ export class World {
   pipRect: DOMRect | null = null;
   private pipTarget: THREE.WebGLRenderTarget | null = null;
   private pipFrame = 0;
+  private obstacleMesh: THREE.InstancedMesh | null = null;
+  private guardian: Guardian | null = null;
+  private entityMeshes = new Map<string, THREE.Object3D>();
+  private goalRing!: THREE.Mesh;
+  private cacheBeacons = new Map<string, THREE.Mesh>();
+  /** 0..1 ground shaking (marsquake), set by the app each frame */
+  quake = 0;
+  private roll = 0;
 
   constructor(private container: HTMLElement, private data: DataBundle, private sim: Sim) {
     this.ref = -2600;
@@ -128,6 +137,8 @@ export class World {
     this.buildSky();
     this.buildTerrain();
     this.buildRocks();
+    this.buildObstacles();
+    this.sim.on('obstacles', () => this.buildObstacles());
     this.buildTrack();
     this.buildPois();
 
@@ -143,8 +154,16 @@ export class World {
     const chevGeo = new THREE.ShapeGeometry(chevShape);
     chevGeo.rotateX(-Math.PI / 2);
     chevGeo.rotateY(Math.PI);
-    const chevMat = new THREE.MeshBasicMaterial({ color: '#39d0ff', transparent: true, opacity: 0.75, depthWrite: false, fog: false });
-    this.chevrons = new THREE.InstancedMesh(chevGeo, chevMat, 40);
+    const chevMat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.95, depthWrite: false, fog: false, blending: THREE.AdditiveBlending });
+    this.chevrons = new THREE.InstancedMesh(chevGeo, chevMat, 72);
+    this.chevrons.setColorAt(0, new THREE.Color('#39d0ff'));
+    // pulsing ring on the ground where the guide path ends up (next waypoint, cache or tag)
+    const ringGeo = new THREE.RingGeometry(1.5, 1.9, 40);
+    ringGeo.rotateX(-Math.PI / 2);
+    this.goalRing = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: '#39d0ff', transparent: true, opacity: 0.8, depthWrite: false, fog: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending }));
+    this.goalRing.renderOrder = 5;
+    this.goalRing.visible = false;
+    this.scene.add(this.goalRing);
     this.chevrons.frustumCulled = false;
     this.chevrons.renderOrder = 5;
     this.scene.add(this.chevrons);
@@ -279,7 +298,7 @@ export class World {
           const a = r() * Math.PI * 2;
           const d = 4 + r() * 45;
           const size = Math.min(0.12 + d * 0.03, 0.08 + Math.pow(r(), 3) * (0.5 + rock * 1.6));
-          place(smp.e + Math.cos(a) * d, smp.n + Math.sin(a) * d, size);
+          place(smp.e + Math.cos(a) * d, smp.n + Math.sin(a) * d, Math.min(size, 0.3));
         }
       }
     }
@@ -290,7 +309,7 @@ export class World {
       const n = g.originN - r() * g.cell * (g.height - 1);
       const rock = this.data.rocks ? sample(this.data.rocks, e, n) : 0.2;
       if (r() > rock + 0.05) continue;
-      place(e, n, 0.4 + Math.pow(r(), 2) * 2.5 * (0.5 + rock));
+      place(e, n, 0.1 + Math.pow(r(), 2) * 0.25);
     }
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
@@ -298,32 +317,84 @@ export class World {
   }
 
   private buildTrack() {
-    // marker flags every 40 m
-    const poles: THREE.Vector3[] = [];
-    for (const g of this.sim.world.edges.values()) {
-      for (let s = 20; s < g.length - 10; s += 40) {
-        const pt = this.sim.world.pointOnLeg({ edgeId: g.edge.id, forward: true }, s);
-        poles.push(this.v(pt.e + 1.6, pt.n));
-      }
-    }
-    const poleGeo = new THREE.CylinderGeometry(0.025, 0.025, 1.4, 5);
-    poleGeo.translate(0, 0.7, 0);
-    const pm = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: '#dcdcdc' }), poles.length);
-    const flagGeo = new THREE.PlaneGeometry(0.35, 0.22);
-    flagGeo.translate(0.18, 1.28, 0);
-    const fm = new THREE.InstancedMesh(flagGeo, new THREE.MeshBasicMaterial({ color: '#ff8a3d', side: THREE.DoubleSide }), poles.length);
-    const m = new THREE.Matrix4();
-    poles.forEach((p, i) => {
-      m.makeTranslation(p.x, p.y, p.z);
-      pm.setMatrixAt(i, m);
-      fm.setMatrixAt(i, m);
-    });
-    this.worldGroup.add(pm, fm);
     // faint trail line
     for (const g of this.sim.world.edges.values()) {
       const pts = g.samples.map((s) => this.v(s.e, s.n, 0.06));
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#e9c19a', transparent: true, opacity: 0.35 }));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#e9c19a', transparent: true, opacity: 0.16 }));
       this.worldGroup.add(line);
+    }
+  }
+
+  /** Real boulders and rockfall rubble: the same objects the simulation collides with. */
+  private buildObstacles() {
+    const all = this.sim.obstacles.all;
+    if (this.obstacleMesh) {
+      this.worldGroup.remove(this.obstacleMesh);
+      this.obstacleMesh.dispose();
+    }
+    const mesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 1), new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.95, flatShading: true }), all.length);
+    const r = rng(99);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const sc = new THREE.Vector3();
+    const pos = new THREE.Vector3();
+    const col = new THREE.Color();
+    all.forEach((o, i) => {
+      q.setFromEuler(new THREE.Euler((r() - 0.5) * 0.5, r() * 6.28, (r() - 0.5) * 0.5));
+      sc.set(o.r * 1.02, o.h * 0.72, o.r * (0.85 + r() * 0.3));
+      pos.set(o.e, this.y(o.e, o.n) + o.h * 0.3, -o.n);
+      m.compose(pos, q, sc);
+      mesh.setMatrixAt(i, m);
+      const v = 0.85 + r() * 0.3;
+      if (o.kind === 'rubble') col.setRGB(0.62 * v, 0.36 * v, 0.24 * v);
+      else col.setRGB(0.42 * v, 0.27 * v, 0.19 * v);
+      mesh.setColorAt(i, col);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.obstacleMesh = mesh;
+    this.worldGroup.add(mesh);
+  }
+
+  /** Crewmate and rover models, driven by the guardian's entity list. */
+  attachGuardian(g: Guardian) {
+    this.guardian = g;
+    for (const en of g.entities) {
+      const grp = new THREE.Group();
+      const white = new THREE.MeshStandardMaterial({ color: '#f1f1f1', roughness: 0.55 });
+      if (en.kind === 'teammate') {
+        const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.85, 4, 10), white);
+        body.position.y = 0.95;
+        const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.27, 14, 10), white);
+        helmet.position.y = 1.75;
+        const visor = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 8), new THREE.MeshStandardMaterial({ color: '#c58a2b', metalness: 0.9, roughness: 0.2 }));
+        visor.position.set(0, 1.76, -0.13);
+        const pack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.25), white);
+        pack.position.set(0, 1.2, 0.3);
+        const stripe = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.035, 6, 16), new THREE.MeshBasicMaterial({ color: '#4da3ff' }));
+        stripe.rotation.x = Math.PI / 2;
+        stripe.position.y = 1.25;
+        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.07), new THREE.MeshBasicMaterial({ color: '#4da3ff', fog: false }));
+        lamp.position.set(0, 2.08, 0);
+        grp.add(body, helmet, visor, pack, stripe, lamp);
+      } else {
+        const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 3.6), white);
+        body.position.y = 1.3;
+        const cab = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.9, 1.6), new THREE.MeshStandardMaterial({ color: '#2b3038', metalness: 0.6, roughness: 0.3 }));
+        cab.position.set(0, 2.1, -0.7);
+        grp.add(body, cab);
+        for (const [x, z] of [[-1.25, -1.3], [1.25, -1.3], [-1.25, 0], [1.25, 0], [-1.25, 1.3], [1.25, 1.3]]) {
+          const wh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.35, 14), new THREE.MeshStandardMaterial({ color: '#3a3a3a', roughness: 0.9 }));
+          wh.rotation.z = Math.PI / 2;
+          wh.position.set(x, 0.5, z);
+          grp.add(wh);
+        }
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.6), white);
+        mast.position.set(0.7, 2.9, 0.9);
+        grp.add(mast);
+      }
+      this.entityMeshes.set(en.id, grp);
+      this.scene.add(grp);
     }
   }
 
@@ -370,6 +441,22 @@ export class World {
         }
         g.position.copy(base);
         g.position.x += 4;
+        this.worldGroup.add(g);
+      } else if (p.kind === 'cache') {
+        const g = new THREE.Group();
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 0.9), new THREE.MeshStandardMaterial({ color: '#d9d9d9', roughness: 0.5, metalness: 0.3 }));
+        crate.position.y = 0.45;
+        const band = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.16, 0.92), new THREE.MeshBasicMaterial({ color: '#ffb020' }));
+        band.position.y = 0.62;
+        const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.1, 12), new THREE.MeshStandardMaterial({ color: '#3ce39a', roughness: 0.4 }));
+        tank.position.set(0.95, 0.55, 0);
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.4), new THREE.MeshStandardMaterial({ color: '#cccccc' }));
+        pole.position.set(-0.6, 1.2, 0);
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.16), new THREE.MeshBasicMaterial({ color: '#ffb020', fog: false }));
+        beacon.position.set(-0.6, 2.45, 0);
+        g.add(crate, band, tank, pole, beacon);
+        g.position.copy(base);
+        this.cacheBeacons.set(p.id, beacon);
         this.worldGroup.add(g);
       } else if (p.kind === 'shelter') {
         // undercut slab leaning against the butte face
@@ -427,6 +514,114 @@ export class World {
     return { x: ((sx * f) / a + 1) * 0.5 * w, y: (1 - sy * f) * 0.5 * h };
   }
 
+  /** Inverse of toVisor: a point on the curved visor (px) back to the undistorted image (px). */
+  fromVisor(x: number, y: number) {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const a = w / h;
+    const k = VISOR_K;
+    const vx = ((x / w) * 2 - 1) * a;
+    const vy = 1 - (y / h) * 2;
+    const f = (1 + k * (vx * vx + vy * vy)) / (1 + k * a * a);
+    return { x: ((vx * f) / a + 1) * 0.5 * w, y: (1 - vy * f) * 0.5 * h };
+  }
+
+  /** pixels per metre at 1 m distance (for sizing outlines) */
+  focalPx() {
+    return this.container.clientHeight / 2 / Math.tan((this.camera.fov * Math.PI) / 360);
+  }
+
+  /**
+   * What is under this visor pixel? Named things (crew, rover, drone, sites, tags) win when the
+   * gaze is close to them; otherwise the view ray is marched over the terrain to find a boulder
+   * or the patch of ground being looked at.
+   */
+  pick(px: number, py: number): Pick {
+    const sim = this.sim;
+    const g = this.guardian;
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const focal = this.focalPx();
+    type C = { type: Pick['type']; id: string; name: string; e: number; n: number; up: number; size: number };
+    const cands: C[] = [];
+    if (g) {
+      for (const en of g.entities) cands.push({ type: 'entity', id: en.id, name: en.name, e: en.e, n: en.n, up: en.kind === 'teammate' ? 1.1 : 1.4, size: en.kind === 'teammate' ? 1.1 : 2.2 });
+      for (const t of g.tags) {
+        if (t.follow) continue;
+        cands.push({ type: 'tag', id: String(t.id), name: t.label, e: t.e, n: t.n, up: t.up + 1.2, size: 0.8 });
+      }
+    }
+    if (sim.drone.active) cands.push({ type: 'drone', id: 'drone', name: 'Scout drone', e: sim.drone.e, n: sim.drone.n, up: sim.drone.alt, size: 1.4 });
+    for (const p of this.data.pois) {
+      if (!sim.discovered.has(p.id) || p.kind === 'hazard') continue;
+      const off = p.kind === 'habitat' ? [20, -10, 5, 8] : p.kind === 'shelter' ? [16, 0, 5, 9] : p.kind === 'cache' ? [0, 0, 0.8, 1.3] : [4, 0, 1.6, 1.6];
+      cands.push({ type: 'poi', id: p.id, name: p.name, e: p.e + off[0], n: p.n + off[1], up: off[2], size: off[3] });
+    }
+    let best: (C & { d: number; dist: number }) | null = null;
+    for (const c of cands) {
+      const pr = this.project(c.e, c.n, c.up);
+      if (!pr.visible || pr.dist > 2500) continue;
+      const rad = Math.max(38, (c.size / Math.max(1, pr.dist)) * focal * 1.25);
+      const d = Math.hypot(pr.x - px, pr.y - py) / rad;
+      if (d < 1 && (!best || d < best.d)) best = { ...c, d, dist: pr.dist };
+    }
+    // view ray through the pixel (undo the visor curvature first)
+    const u = this.fromVisor(px, py);
+    const dir = new THREE.Vector3((u.x / w) * 2 - 1, 1 - (u.y / h) * 2, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
+    const o = this.camera.position;
+    const el = this.data.elevation;
+    const minE = el.originE;
+    const maxE = el.originE + el.cell * (el.width - 1);
+    const maxN = el.originN;
+    const minN = el.originN - el.cell * (el.height - 1);
+    let hit: Pick | null = null;
+    let prevT = 0;
+    for (let t = 1; t < 3000; t += 0.5 + t * 0.03) {
+      const x = o.x + dir.x * t;
+      const yy = o.y + dir.y * t;
+      const e = x;
+      const n = -(o.z + dir.z * t);
+      if (e < minE || e > maxE || n < minN || n > maxN) break;
+      const gy = this.y(e, n);
+      if (t < 260) {
+        for (const ob of sim.obstacles.near(e, n, 0.6 + t * 0.012)) {
+          if (yy < this.y(ob.e, ob.n) + ob.h + 0.3) {
+            hit = { type: 'boulder', name: ob.kind === 'rubble' ? 'Rockfall debris' : ob.h <= 0.7 ? 'Low rock' : 'Boulder', e: ob.e, n: ob.n, up: ob.h * 0.5, dist: Math.hypot(ob.e - o.x, ob.n + o.z), size: Math.max(ob.r, ob.h * 0.6), obstacle: ob };
+            break;
+          }
+        }
+        if (hit) break;
+      }
+      if (yy <= gy) {
+        // refine between the last two steps
+        let lo = prevT;
+        let hi = t;
+        for (let i = 0; i < 8; i++) {
+          const mid = (lo + hi) / 2;
+          if (o.y + dir.y * mid <= this.y(o.x + dir.x * mid, -(o.z + dir.z * mid))) hi = mid;
+          else lo = mid;
+        }
+        hit = { type: 'ground', name: 'Ground', e: o.x + dir.x * hi, n: -(o.z + dir.z * hi), up: 0, dist: hi, size: Math.max(1.2, hi * 0.03) };
+        break;
+      }
+      prevT = t;
+    }
+    if (best && (!hit || best.dist < hit.dist + 40)) return { type: best.type, id: best.id, name: best.name, e: best.e, n: best.n, up: best.up, dist: best.dist, size: best.size };
+    if (hit) return hit;
+    const p = sim.position();
+    return { type: 'sky', name: 'Sky', e: p.e + dir.x * 1000, n: p.n - dir.z * 1000, up: 400, dist: 1000, size: 100 };
+  }
+
+  /** Still frame of the current view (for "take photo"). */
+  snapshot(maxW = 480): string {
+    const src = this.renderer.domElement;
+    const c = document.createElement('canvas');
+    c.width = maxW;
+    c.height = Math.round((maxW * src.height) / src.width);
+    c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.8);
+  }
+
   /** Project world (e,n,up) to screen pixels. */
   project(e: number, n: number, up = 0): { x: number; y: number; visible: boolean; dist: number } {
     const v = this.v(e, n, up);
@@ -457,12 +652,23 @@ export class World {
       this.camera.updateProjectionMatrix();
     }
     if (moving) this.bob += dt * 7;
-    const eyeY = this.y(p.e, p.n) + EYE + (moving ? Math.sin(this.bob) * 0.04 : 0);
-    this.camera.position.set(p.e, eyeY, -p.n);
+    // body: jump height, fall to the ground, stumble jolt, marsquake shake
+    const b = sim.body;
+    const down = b.fallT > 0 ? Math.min(1, (4 - b.fallT) / 0.45, b.fallT / 1.1) : 0;
+    const sh = Math.min(1, b.shake + this.quake);
+    const jx = sh ? (Math.sin(this.time * 71) + Math.sin(this.time * 113)) * 0.035 * sh : 0;
+    const jy = sh ? (Math.sin(this.time * 89) + Math.sin(this.time * 131)) * 0.03 * sh : 0;
+    const stumble = b.stumbleT > 0 ? Math.sin(Math.min(1, (1.6 - b.stumbleT) / 0.5) * Math.PI) * 0.22 : 0;
+    const eyeY = this.y(p.e, p.n) + EYE + b.alt - down * 1.25 - stumble * 0.5 + (moving && b.alt <= 0 ? Math.sin(this.bob) * 0.04 : 0) + jy;
+    this.camera.position.set(p.e + jx, eyeY, -p.n);
     this.sky.position.copy(this.camera.position);
     const yaw = this.yaw;
-    const look = new THREE.Vector3(Math.sin(yaw) * Math.cos(this.pitch), Math.sin(this.pitch), -Math.cos(yaw) * Math.cos(this.pitch));
+    const pitch = this.pitch - down * 0.35 - stumble * 0.6 + jy * 0.4;
+    const look = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+    this.camera.up.set(0, 1, 0);
     this.camera.lookAt(this.camera.position.clone().add(look));
+    this.roll += (down * 0.55 + stumble * 0.25 + jx * 0.6 - this.roll) * Math.min(1, dt * 12);
+    if (Math.abs(this.roll) > 1e-4) this.camera.rotateZ(this.roll);
 
     // dust & visibility
     const dust = sim.agg().dust;
@@ -476,6 +682,20 @@ export class World {
 
     this.updateChevrons();
     this.updateHazardRings();
+    // crew, rover, cache beacons
+    if (this.guardian) {
+      for (const en of this.guardian.entities) {
+        const mesh = this.entityMeshes.get(en.id);
+        if (!mesh) continue;
+        mesh.position.set(en.e, this.y(en.e, en.n) + (en.moving ? Math.abs(Math.sin(this.time * 5)) * 0.04 : 0), -en.n);
+        mesh.rotation.y = -en.heading;
+      }
+      for (const [id, beacon] of this.cacheBeacons) {
+        const used = this.guardian.cachesUsed.has(id);
+        (beacon.material as THREE.MeshBasicMaterial).color.set(used ? '#555555' : '#ffb020');
+        beacon.scale.setScalar(used ? 0.7 : 1 + 0.3 * Math.sin(this.time * 4));
+      }
+    }
 
     // drone
     const dr = sim.drone;
@@ -492,33 +712,62 @@ export class World {
     }
   }
 
+  /**
+   * AR guide arrows: laid along the live guide path (A* around boulders, slopes and rubble),
+   * flowing toward the destination. They follow whatever the navigator is routing to right now.
+   */
   private updateChevrons() {
     const sim = this.sim;
-    const plan = sim.plan;
+    const guide = sim.guide;
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
-    const sc = new THREE.Vector3(1.1, 1, 1.1);
+    const sc = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const col = new THREE.Color();
+    const detour = !!sim.detour;
+    const base = detour ? [1, 0.42, 0.84] : sim.goalOverride ? [1, 0.69, 0.13] : [0.22, 0.82, 1];
+    const SPACING = 4.5;
+    const MAXD = 190;
     let i = 0;
-    if (plan && sim.status === 'active') {
+    if (sim.status === 'active' && guide.length > 1) {
+      let next = 4.5 + ((this.time * 2.2) % SPACING); // flow toward the goal
       let acc = 0;
-      const start = sim.pos.leg ? sim.pos.s : 0;
-      outer: for (let li = 0; li < plan.route.length; li++) {
-        const leg = plan.route[li];
-        const len = sim.world.legLength(leg);
-        for (let s = li === 0 ? start + 6 : 6; s < len; s += 7) {
-          if (i >= 40 || acc > 200) break outer;
-          const a = sim.world.pointOnLeg(leg, s);
-          const b = sim.world.pointOnLeg(leg, Math.min(len, s + 2));
-          const yaw = Math.atan2(b.e - a.e, b.n - a.n);
-          q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
-          m.compose(this.v(a.e, a.n, 0.12), q, sc);
-          this.chevrons.setMatrixAt(i++, m);
-          acc += 7;
+      outer: for (let k = 0; k < guide.length - 1; k++) {
+        const [ae, an] = guide[k];
+        const [be, bn] = guide[k + 1];
+        const len = Math.hypot(be - ae, bn - an);
+        if (len < 1e-3) continue;
+        while (next <= acc + len) {
+          if (i >= 72 || next > MAXD) break outer;
+          const t = (next - acc) / len;
+          const e = ae + (be - ae) * t;
+          const n = an + (bn - an) * t;
+          q.setFromAxisAngle(up, -Math.atan2(be - ae, bn - an));
+          const s = 0.95 + Math.min(1.6, next / 60);
+          sc.set(s, 1, s);
+          m.compose(this.v(e, n, 0.14), q, sc);
+          this.chevrons.setMatrixAt(i, m);
+          const fade = Math.min(1, (next - 4) / 4) * (1 - Math.pow(next / MAXD, 2)) * (0.75 + 0.25 * Math.sin(this.time * 5 - next * 0.35));
+          col.setRGB(base[0] * fade, base[1] * fade, base[2] * fade);
+          this.chevrons.setColorAt(i, col);
+          i++;
+          next += SPACING;
         }
+        acc += len;
       }
     }
     this.chevrons.count = i;
     this.chevrons.instanceMatrix.needsUpdate = true;
+    if (this.chevrons.instanceColor) this.chevrons.instanceColor.needsUpdate = true;
+    // destination ring
+    const wp = sim.status === 'active' ? sim.nextWaypoint() : null;
+    this.goalRing.visible = !!wp && wp.dist < 400 && wp.dist > 14;
+    if (wp) {
+      this.goalRing.position.copy(this.v(wp.e, wp.n, 0.2));
+      const s = 1.4 + 0.35 * Math.sin(this.time * 3) + Math.min(3, wp.dist / 60);
+      this.goalRing.scale.set(s, 1, s);
+      (this.goalRing.material as THREE.MeshBasicMaterial).color.setRGB(base[0], base[1], base[2]);
+    }
   }
 
   private ringsBuilt = new Set<string>();

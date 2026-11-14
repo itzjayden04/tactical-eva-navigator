@@ -5,7 +5,9 @@
  * iris centres. Per frame we build a small feature vector (iris position in each
  * eye opening + head yaw/pitch proxies) and map it to a screen point:
  *   - uncalibrated: head-pose only, auto-zeroed on the first second of tracking
- *   - calibrated:   ridge regression fitted on a 9-point calibration
+ *   - calibrated:   ridge regression (quadratic terms) fitted on a 13-point calibration,
+ *                   with blink frames dropped, per-dot outlier rejection, and a
+ *                   validation pass that removes the leftover constant offset
  * The output is smoothed with a One Euro filter. Webcam gaze is coarse
  * (~4–8° visual angle), so TEVAN uses large, well-spaced gaze targets.
  * No video frame ever leaves the device.
@@ -111,7 +113,19 @@ export function gazeFeatures(lm: NormalizedLandmark[]): number[] | null {
   return [irisH, irisV, headX, headY];
 }
 
-const expand = (f: number[]) => [1, f[0], f[1], f[2], f[3], f[0] * f[2], f[1] * f[3]];
+/** Eye openness (lid gap / eye width), averaged over both eyes. Drops toward 0 in a blink. */
+export function eyeOpenness(lm: NormalizedLandmark[]): number {
+  if (lm.length < 478) return 1;
+  const one = (top: number, bot: number, a: number, b: number) => Math.hypot(lm[top].x - lm[bot].x, lm[top].y - lm[bot].y) / (Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y) || 1e-6);
+  return (one(159, 145, 33, 133) + one(386, 374, 362, 263)) / 2;
+}
+
+const median = (v: number[]) => {
+  const a = [...v].sort((x, y) => x - y);
+  return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : 0;
+};
+
+const expand = (f: number[]) => [1, f[0], f[1], f[2], f[3], f[0] * f[2], f[1] * f[3], f[0] * f[0], f[1] * f[1], f[0] * f[1]];
 
 export class GazeTracker {
   state: GazeState = 'off';
@@ -138,6 +152,14 @@ export class GazeTracker {
   private zero: number[] | null = null;
   private zeroAcc: number[][] = [];
   private calib: { f: number[]; x: number; y: number }[] = [];
+  /** eye openness now and its slow baseline (blink detection) */
+  open = 1;
+  private openBase = 0;
+  blinking = false;
+  /** constant offset left after the fit, measured by the validation dots (px) */
+  private bias = { x: 0, y: 0 };
+  /** leave-one-dot-out error of the last calibration, px (honest accuracy) */
+  cvErrorPx = 0;
 
   constructor() {
     this.video = document.createElement('video');
@@ -245,8 +267,16 @@ export class GazeTracker {
       return;
     }
     this.lastFaceT = now;
-    this.feat = f;
     this.set('tracking');
+    // blink: lids closing drags the iris landmarks, so hold the last point instead of jumping
+    this.open = eyeOpenness(lm!);
+    this.openBase = this.openBase ? this.openBase + (Math.max(this.open, this.openBase * 0.9) - this.openBase) * 0.02 : this.open;
+    this.blinking = this.open < this.openBase * 0.62;
+    if (this.blinking) {
+      this.feat = null;
+      return;
+    }
+    this.feat = f;
     const raw = this.predict(f);
     if (!raw) return;
     const W = window.innerWidth;
@@ -262,7 +292,7 @@ export class GazeTracker {
     if (this.calibrated && this.wx && this.wy && this.norm) {
       const z = expand(f.map((v, i) => (v - this.norm!.mu[i]) / this.norm!.sd[i]));
       const dot = (w: number[]) => w.reduce((s, wi, i) => s + wi * z[i], 0);
-      return { x: dot(this.wx), y: dot(this.wy) };
+      return { x: dot(this.wx) - this.bias.x, y: dot(this.wy) - this.bias.y };
     }
     // uncalibrated: head-pose pointing, zeroed on the first ~30 frames
     if (!this.zero) {
@@ -292,27 +322,69 @@ export class GazeTracker {
   get calibrationSamples() {
     return this.calib.length;
   }
-  /** Fit the regression. Returns mean in-sample error in px, or null if not enough data. */
+  /** Raw (unsmoothed) prediction for the current frame, for the validation dots. */
+  rawPoint(): { x: number; y: number } | null {
+    return this.feat ? this.predict(this.feat) : null;
+  }
+  /** Remove the constant offset measured by the validation dots (mean of predicted − target). */
+  applyBias(dx: number, dy: number) {
+    this.bias = { x: this.bias.x + dx, y: this.bias.y + dy };
+    this.fx.reset();
+    this.fy.reset();
+  }
+
+  /**
+   * Fit the regression. Per dot, samples far from that dot's median feature vector (saccades
+   * still in flight, half-blinks) are dropped first. Returns the leave-one-dot-out error in px
+   * (what to expect on a point it was not trained on), or null if there is not enough data.
+   */
   finishCalibration(): number | null {
-    const S = this.calib;
-    const points = new Set(S.map((s) => `${Math.round(s.x)},${Math.round(s.y)}`));
-    if (S.length < 30 || points.size < 5) return null;
+    const groups = new Map<string, { f: number[]; x: number; y: number }[]>();
+    for (const c of this.calib) {
+      const k = `${Math.round(c.x)},${Math.round(c.y)}`;
+      (groups.get(k) ?? groups.set(k, []).get(k)!).push(c);
+    }
+    const S: { f: number[]; x: number; y: number; g: number }[] = [];
+    let gi = 0;
+    for (const list of groups.values()) {
+      if (list.length < 4) continue;
+      const k = list[0].f.length;
+      const med = Array.from({ length: k }, (_, i) => median(list.map((c) => c.f[i])));
+      const mad = Array.from({ length: k }, (_, i) => median(list.map((c) => Math.abs(c.f[i] - med[i]))) || 1e-6);
+      const kept = list.filter((c) => c.f.every((v, i) => Math.abs(v - med[i]) <= 3.5 * mad[i] + 1e-4));
+      for (const c of kept.length >= 4 ? kept : list) S.push({ ...c, g: gi });
+      gi++;
+    }
+    if (S.length < 40 || gi < 6) return null;
     const k = S[0].f.length;
     const mu = Array.from({ length: k }, (_, i) => S.reduce((s, c) => s + c.f[i], 0) / S.length);
     const sd = Array.from({ length: k }, (_, i) => Math.sqrt(S.reduce((s, c) => s + (c.f[i] - mu[i]) ** 2, 0) / S.length) || 1e-6);
     const A = S.map((c) => expand(c.f.map((v, i) => (v - mu[i]) / sd[i])));
-    this.wx = ridge(A, S.map((c) => c.x), 0.5);
-    this.wy = ridge(A, S.map((c) => c.y), 0.5);
+    const LAMBDA = 1.5;
+    const dot = (w: number[], z: number[]) => w.reduce((a, wi, i) => a + wi * z[i], 0);
+    // leave-one-dot-out cross-validation
+    let err = 0;
+    let cnt = 0;
+    for (let g = 0; g < gi; g++) {
+      const tr = S.map((c, i) => (c.g !== g ? i : -1)).filter((i) => i >= 0);
+      const te = S.map((c, i) => (c.g === g ? i : -1)).filter((i) => i >= 0);
+      if (!te.length) continue;
+      const wx = ridge(tr.map((i) => A[i]), tr.map((i) => S[i].x), LAMBDA);
+      const wy = ridge(tr.map((i) => A[i]), tr.map((i) => S[i].y), LAMBDA);
+      const px = median(te.map((i) => dot(wx, A[i])));
+      const py = median(te.map((i) => dot(wy, A[i])));
+      err += Math.hypot(px - S[te[0]].x, py - S[te[0]].y);
+      cnt++;
+    }
+    this.cvErrorPx = cnt ? err / cnt : 0;
+    this.wx = ridge(A, S.map((c) => c.x), LAMBDA);
+    this.wy = ridge(A, S.map((c) => c.y), LAMBDA);
     this.norm = { mu, sd };
+    this.bias = { x: 0, y: 0 };
     this.calibrated = true;
     this.fx.reset();
     this.fy.reset();
-    const err = A.reduce((s, z, r) => {
-      const px = this.wx!.reduce((a, w, i) => a + w * z[i], 0);
-      const py = this.wy!.reduce((a, w, i) => a + w * z[i], 0);
-      return s + Math.hypot(px - S[r].x, py - S[r].y);
-    }, 0);
-    this.accuracyPx = err / S.length;
+    this.accuracyPx = this.cvErrorPx;
     return this.accuracyPx;
   }
 }

@@ -7,6 +7,8 @@
  * grammar (no LLM): the same text always gives the same command.
  */
 export type FeatureId = 'mission' | 'o2' | 'h2o' | 'power' | 'dose' | 'fatigue' | 'map' | 'route' | 'drone' | 'sample' | 'layers';
+export type TagWord = 'teammate' | 'habitat' | 'destination' | 'hazard' | 'sample' | 'resource' | 'note';
+export type ToolId = 'tools' | 'team' | 'supplies' | 'systems' | 'weather' | 'tags' | 'log' | 'emergency';
 export type LayerWord = 'radiation' | 'slope' | 'poi' | 'dust' | 'mag' | 'fog';
 
 export type Command =
@@ -26,13 +28,29 @@ export type Command =
   | { type: 'option'; n: number }
   | { type: 'pace'; pace?: 'slow' | 'nominal' | 'fast' }
   | { type: 'zoom'; dir: 'in' | 'out' | 'reset' }
-  | { type: 'calibrate' }
+  | { type: 'calibrate'; what?: 'voice' }
   | { type: 'commit' }
   | { type: 'clear' }
   | { type: 'help' }
   | { type: 'mute'; on: boolean }
   | { type: 'sleep' }
-  | { type: 'wake' };
+  | { type: 'wake' }
+  | { type: 'hello' }
+  | { type: 'whatThis' }
+  | { type: 'labelThis'; kind?: TagWord }
+  | { type: 'tagKind'; kind: TagWord }
+  | { type: 'removeTag' }
+  | { type: 'goTag'; kind?: TagWord }
+  | { type: 'goTeammate' }
+  | { type: 'emergency'; action: 'help' | 'habitat' | 'shelter' | 'rest' | 'cache' | 'resupply' | 'resume' | 'cancelNav' }
+  | { type: 'stability'; on?: boolean }
+  | { type: 'tool'; tool: ToolId }
+  | { type: 'logPanel'; open: boolean }
+  | { type: 'photo' }
+  | { type: 'repeat' }
+  | { type: 'undo' }
+  | { type: 'jump' }
+  | { type: 'where' };
 
 const LAYER_WORDS: [RegExp, LayerWord][] = [
   [/\b(radiation|dose map|rad)\b/, 'radiation'],
@@ -57,6 +75,26 @@ const FEATURE_WORDS: [RegExp, FeatureId][] = [
   [/\b(mission|objectives?|eva)\b/, 'mission'],
 ];
 
+const TAG_WORDS: [RegExp, TagWord][] = [
+  [/\b(teammates?|team mates?|crewmates?|crew|buddy|partner|astronaut|person)\b/, 'teammate'],
+  [/\b(habitat|hab|base|home)\b/, 'habitat'],
+  [/\b(destination|waypoint|goal|target)\b/, 'destination'],
+  [/\b(hazards?|danger|dangerous|unsafe|obstacle)\b/, 'hazard'],
+  [/\b(samples?|specimen|science)\b/, 'sample'],
+  [/\b(resources?|supply|supplies|equipment|cache|ice|water)\b/, 'resource'],
+  [/\b(notes?|other|interesting|point)\b/, 'note'],
+];
+const tagWord = (t: string) => TAG_WORDS.find(([r]) => r.test(t))?.[1];
+
+/** How speech recognisers tend to hear "TEVAN". Extra spellings learned in the voice check are added at runtime. */
+export const WAKE_ALIASES = ['tevan', 'teven', 'tevin', 'tivan', 'tavan', 'taven', 'tavern', 'kevin', 'devon', 'devin', 'evan', 'seven', 'heaven', 't van', 'tee van', 'tea van', 'the van', 'tehran', 'tevon', 'teban', 'tabon', 'tyvan', 'ti van', 'tv on'];
+/** Remove a leading "hi TEVAN," / "TEVAN," so "TEVAN, show radiation" parses as "show radiation". */
+export function stripWake(t: string, extra: string[] = []): { text: string; woke: boolean } {
+  const names = [...extra, ...WAKE_ALIASES].map((a) => a.replace(/[^a-z0-9 ]/g, '')).filter(Boolean).sort((a, b) => b.length - a.length);
+  const m = t.match(new RegExp(`^(?:(?:hi|hey|hello|ok|okay|yo|hay|high) )?(?:${names.join('|')})\\b ?`));
+  return m ? { text: t.slice(m[0].length).trim(), woke: true } : { text: t, woke: false };
+}
+
 const NUM: [RegExp, number][] = [
   [/^(one|won|1|first|wan)$/, 1],
   [/^(two|to|too|2|second)$/, 2],
@@ -75,15 +113,58 @@ export function normalise(text: string) {
 }
 
 /** Parse one utterance. Returns null when it isn't a command (ignored silently). */
-export function parseCommand(text: string): Command | null {
-  const t = normalise(text);
-  if (!t) return null;
+export function parseCommand(text: string, aliases: string[] = []): Command | null {
+  const w = stripWake(normalise(text), aliases);
+  const t = w.text;
+  if (!t) return w.woke ? { type: 'hello' } : null;
   const has = (re: RegExp) => re.test(t);
   const feature = () => FEATURE_WORDS.find(([r]) => r.test(t))?.[1];
   const deictic = has(/\b(this|that|it|here|these|those)\b/);
 
   if (has(/\b(stop|pause) listening\b|\bgo to sleep\b|\bmic off\b/)) return { type: 'sleep' };
   if (has(/\b(resume|start) listening\b|\bwake up\b|\bmic on\b/)) return { type: 'wake' };
+
+  // ---- emergencies first: these must never be mistaken for anything else
+  if (has(/\b(mayday|s o s|sos|call (for )?help|i need help|send help|help me|emergency call|call (the )?(habitat|base|team))\b/)) return { type: 'emergency', action: 'help' };
+  if (has(/\b(back|return|go|take me|head|route|get me|navigate) (back )?(to )?(the )?(habitat|hab|home|base)\b|\babort (the )?(eva|mission)\b|\bgo home\b/) && !has(/\b(drone|scout)\b/)) return { type: 'emergency', action: 'habitat' };
+  if (has(/\b(nearest|closest|find|go to|take me to|navigate to|route to)( a| the)?( nearest| closest)? (shelter|cover)\b|\btake cover\b|^shelter$/)) return { type: 'emergency', action: 'shelter' };
+  if (has(/\b(cancel|stop|end) (the )?(navigation|guidance|detour|guiding)\b/)) return { type: 'emergency', action: 'cancelNav' };
+  if (has(/\b(resume|continue|back to) (the )?(mission|plan|traverse|objectives?)\b/)) return { type: 'emergency', action: 'resume' };
+  if (has(/\b(go to|navigate to|take me to|route to|guide me to|find|nearest|closest)( the| a)?( nearest| closest)?( supply)? (cache|supplies|supply station|station|depot)\b/)) return { type: 'emergency', action: 'cache' };
+  if (has(/\b(resupply|re supply|refill|restock|top up|get supplies)\b/)) return { type: 'emergency', action: 'resupply' };
+  if (/^(rest|rest here|take a rest|i need (a |to )?rest|take a break|take five|i am tired|im tired)$/.test(t) || has(/\brest for\b/)) return { type: 'emergency', action: 'rest' };
+  if (/^(emergency|emergencies|emergency menu|quick actions|panic)$/.test(t)) return { type: 'tool', tool: 'emergency' };
+  if (has(/\b(stability|stabili[sz]e|stabili[sz]er|brace|suit assist)\b/)) return { type: 'stability', on: has(/\b(off|disable|release|stop|remove)\b/) ? false : has(/\b(on|enable|engage|start|activate)\b/) ? true : undefined };
+  if (/^(jump|hop|jump over)$/.test(t)) return { type: 'jump' };
+  if (has(/\b(repeat|say (that |it )?again|come again|pardon|what did you say)\b/)) return { type: 'repeat' };
+  if (has(/\b(undo|revert|take that back)\b/)) return { type: 'undo' };
+
+  // ---- tags and "what is this" (use the thing under the astronaut's eyes)
+  if (has(/\b(remove|delete|clear|erase) (the |that |this |last |my )*(tags?|labels?|markers?)\b/)) return { type: 'removeTag' };
+  if (has(/\b(where is|wheres|where s|locate) (my |the )?(teammate|crewmate|buddy|partner|ev ?2|ev two|e v 2|crew)\b/)) return { type: 'tool', tool: 'team' };
+  if (has(/\b(go to|navigate to|take me to|guide me to|find|route to) (my |the )?(teammate|crewmate|buddy|partner|ev ?2|ev two|e v 2)\b/)) return { type: 'goTeammate' };
+  if (has(/\b(go|navigate|take me|guide me|route|head|walk) (to )?(the |my |that |this )?(last |latest )?(\w+ )?(tag|marker|label|destination)\b|\b(go|take me|guide me|navigate) there\b/)) return { type: 'goTag', kind: has(/\bdestination\b/) ? undefined : tagWord(t.replace(/\b(tag|marker|label)\b/g, '')) };
+  if (has(/\b(what is|whats|what s|what are|identify|describe|scan|analy[sz]e|tell me about)\b/) && deictic) return { type: 'whatThis' };
+  if (has(/\bwhat am i (looking at|seeing)\b|\bwhat do i see\b/)) return { type: 'whatThis' };
+  if (has(/\b(label|tag|pin|flag)\b/) && !has(/\b(show|list|my|open) tags\b/) && t !== 'tags') return { type: 'labelThis', kind: tagWord(t.replace(/\b(label|tag|pin|flag)\b/g, '')) };
+  if (has(/\bmark\b/) && deictic) return { type: 'labelThis', kind: tagWord(t) };
+  {
+    const k = t.match(/^(?:a |an |its a |its an |it is a |it is an |as a |as an |as |the |call it a |call it )?(.+)$/);
+    const tw = k && k[1].split(' ').length <= 2 ? TAG_WORDS.find(([r]) => new RegExp(`^${r.source}$`).test(k[1]))?.[1] : undefined;
+    if (tw) return { type: 'tagKind', kind: tw };
+  }
+  if (has(/\bwhere am i\b|\bmy (position|location|coordinates)\b/)) return { type: 'where' };
+  if (has(/\b(take|capture|snap|shoot|grab) (a |the )?(photo|picture|image|snapshot|pic)\b/) || /^(photo|picture|snapshot)$/.test(t)) return { type: 'photo' };
+
+  // ---- visor tools
+  if (has(/\b(hide|close) (the )?(mission )?log\b/)) return { type: 'logPanel', open: false };
+  if (has(/\b(show|open|display|read) (me )?(the )?(mission |event |comms )?(log|timeline|history)\b|\bwhat happened\b/) || /^(log|timeline|history)$/.test(t)) return { type: 'logPanel', open: true };
+  if (has(/\b(team|crew) (status|tracker|tracking|positions?)\b/) || /^(team|crew)$/.test(t)) return { type: 'tool', tool: 'team' };
+  if (has(/\b(show |list |check )?(supplies|caches|supply (status|caches|stations))\b/)) return { type: 'tool', tool: 'supplies' };
+  if (has(/\b(systems?( status| check)?|diagnostics|sensors?|self test)\b/) && !has(/\bsuit status\b/)) return { type: 'tool', tool: 'systems' };
+  if (/^(weather|forecast|space weather|conditions|weather report)$/.test(t) || has(/\b(check|show|whats|what is|hows|how is|any) (the )?(weather|forecast|space weather|conditions|storms?)\b|\bstorm (status|update)\b/)) return { type: 'tool', tool: 'weather' };
+  if (has(/\b(show|list|my|open) tags\b/) || t === 'tags') return { type: 'tool', tool: 'tags' };
+  if (/^(tools|apps|menu|toolbox|more|all features|open tools|show tools)$/.test(t)) return { type: 'tool', tool: 'tools' };
 
   // gaze-targeted ("deictic") commands: "launch this feature", "check this feature's progress"
   if (deictic && has(/\b(progress|status|state|check|how is|hows|report)\b/)) return { type: 'progressThis' };
@@ -112,6 +193,7 @@ export function parseCommand(text: string): Command | null {
   if (has(/\bzoom in\b|\bmagnify\b|\benhance\b/)) return { type: 'zoom', dir: 'in' };
   if (has(/\bzoom out\b/)) return { type: 'zoom', dir: 'out' };
   if (has(/\b(reset|normal) zoom\b|\bzoom (reset|normal)\b/)) return { type: 'zoom', dir: 'reset' };
+  if (has(/\b(voice|mic|microphone) (check|calibration|test)\b|\b(calibrate|recalibrate|check|test) (my |the )?(voice|mic|microphone)\b/)) return { type: 'calibrate', what: 'voice' };
   if (has(/\b(calibrate|recalibrate)\b/)) return { type: 'calibrate' };
 
   if (has(/\b(close|exit|hide) (the )?(map|planner|panel)\b/) || /^(close|back|exit|done)$/.test(t)) return { type: 'close' };
@@ -157,6 +239,14 @@ export class Voice {
   private restartTimer = 0;
   /** final transcript (already filtered while TEVAN speaks) */
   onFinal: (text: string) => void = () => {};
+  /** every transcript the recogniser produces (used by the voice check) */
+  onHeard: (text: string, final: boolean) => void = () => {};
+  /** extra spellings of "TEVAN" learned from this user's voice check */
+  aliases: string[] = [];
+  /** last sentence TEVAN spoke (for "repeat that") */
+  lastSpoken = '';
+  /** pitch of TEVAN's replies, set away from the user's own pitch by the voice check */
+  replyPitch = 0.95;
   /** live partial transcript */
   onInterim: (text: string) => void = () => {};
   onState: (s: VoiceState) => void = () => {};
@@ -185,6 +275,7 @@ export class Voice {
         const r = e.results[i];
         const text = String(r[0]?.transcript ?? '').trim();
         if (!text) continue;
+        this.onHeard(text, !!r.isFinal);
         if (r.isFinal) {
           this.level = 0;
           this.set(this.asleep ? 'asleep' : 'listening');
@@ -273,9 +364,89 @@ export class Voice {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.07;
-    u.pitch = 0.95;
+    u.pitch = this.replyPitch;
+    this.lastSpoken = text;
     this.speakingUntil = performance.now() + Math.min(9000, 400 + text.length * 65);
     u.onend = () => (this.speakingUntil = performance.now() + 350);
     speechSynthesis.speak(u);
+  }
+}
+
+/**
+ * MIC METER: reads the real microphone level and pitch (Web Audio), independent of the
+ * speech recogniser. Used by the "Hi TEVAN" voice check and to drive the live mic indicator.
+ */
+export class MicMeter {
+  private ctx: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private buf = new Float32Array(2048);
+  private stream: MediaStream | null = null;
+  /** current level in dBFS (about -90 silence .. 0 clipping) */
+  db = -90;
+  /** 0..1 for UI meters */
+  level = 0;
+  /** room noise floor measured by the voice check, dBFS */
+  noiseDb = -60;
+  ready = false;
+  error = '';
+
+  async start(): Promise<boolean> {
+    if (this.ready) return true;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      const AC = window.AudioContext || (window as any).webkitAudioContext;
+      this.ctx = new AC();
+      const src = this.ctx!.createMediaStreamSource(this.stream);
+      this.analyser = this.ctx!.createAnalyser();
+      this.analyser.fftSize = 2048;
+      src.connect(this.analyser);
+      this.ready = true;
+      return true;
+    } catch (e: any) {
+      this.error = String(e?.name ?? e);
+      return false;
+    }
+  }
+  /** Call once per frame. */
+  sample() {
+    if (!this.analyser) return this.db;
+    this.analyser.getFloatTimeDomainData(this.buf);
+    let sum = 0;
+    for (let i = 0; i < this.buf.length; i++) sum += this.buf[i] * this.buf[i];
+    const rms = Math.sqrt(sum / this.buf.length);
+    this.db = 20 * Math.log10(Math.max(rms, 1e-5));
+    const l = Math.max(0, Math.min(1, (this.db - this.noiseDb - 4) / 30));
+    this.level += (l - this.level) * 0.35;
+    return this.db;
+  }
+  /** Fundamental frequency of the current frame (autocorrelation), or null when unvoiced. */
+  pitch(): number | null {
+    if (!this.ctx || !this.analyser) return null;
+    const b = this.buf;
+    const sr = this.ctx.sampleRate;
+    const n = b.length;
+    let e0 = 0;
+    for (let i = 0; i < n; i++) e0 += b[i] * b[i];
+    if (e0 / n < 1e-5) return null;
+    const minLag = Math.floor(sr / 400);
+    const maxLag = Math.min(n - 1, Math.floor(sr / 70));
+    let best = 0;
+    let bestLag = 0;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let c = 0;
+      for (let i = 0; i < n - lag; i++) c += b[i] * b[i + lag];
+      c /= e0;
+      if (c > best) {
+        best = c;
+        bestLag = lag;
+      }
+    }
+    return best > 0.45 && bestLag ? sr / bestLag : null;
+  }
+  stop() {
+    this.stream?.getTracks().forEach((t) => t.stop());
+    void this.ctx?.close();
+    this.ready = false;
+    this.analyser = null;
   }
 }

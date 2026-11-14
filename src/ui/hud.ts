@@ -15,6 +15,7 @@ import { LAYER_INFO, LayerId, TacticalMap } from './map';
 import { drawChart } from './chart';
 import type { World } from '../render/scene';
 import type { FeatureId } from './voice';
+import { TAG_INFO, TAG_KINDS, type Guardian, type Pick } from '../core/guardian';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -54,6 +55,21 @@ export interface Detail {
   rows: [string, string, string?][];
   chart?: boolean;
   speech: string;
+  /** gaze / click buttons under the rows (emergency menu, tools, tag types) */
+  acts?: Act[];
+  cols?: 2 | 3 | 4;
+  oneCol?: boolean;
+  img?: string;
+  hint?: string;
+}
+export interface Act {
+  id: string;
+  label: string;
+  icon: string;
+  sub?: string;
+  color?: string;
+  danger?: boolean;
+  on?: boolean;
 }
 
 type IslandKind = 'incident' | 'advisory' | 'junction' | 'wait' | 'detail' | 'note' | 'sample' | 'idle';
@@ -70,7 +86,36 @@ export const FEATURE_LABEL: Record<string, string> = {
   drone: 'Drone scout',
   sample: 'Samples',
   layers: 'Map layers',
+  tools: 'Tools',
+  emergency: 'Emergency',
+  team: 'Team',
+  supplies: 'Supply caches',
+  systems: 'Suit systems',
+  weather: 'Weather',
+  tags: 'Tags',
+  log: 'Mission log',
+  'log-close': 'Close log',
 };
+
+export const EMERGENCY_ACTS = (g: Guardian | null, sim: Sim): Act[] => [
+  { id: 'act:help', label: 'Call for help', icon: 'sos', sub: g?.helpCalled ? 'sent' : 'mayday + position', danger: true, on: g?.helpCalled },
+  { id: 'act:habitat', label: 'Back to habitat', icon: 'home', sub: 'safest route home' },
+  { id: 'act:shelter', label: 'Nearest shelter', icon: 'shield', sub: 'radiation / storm' },
+  { id: 'act:cache', label: 'Resupply', icon: 'inventory_2', sub: 'nearest cache' },
+  { id: 'act:rest', label: 'Rest 5 min', icon: 'self_improvement', sub: 'lower heart rate' },
+  { id: 'act:stability', label: 'Stability assist', icon: 'accessibility_new', sub: sim.stability ? 'on' : 'off', on: sim.stability },
+];
+export const TOOL_ACTS: Act[] = [
+  { id: 'tool:team', label: 'Team', icon: 'group' },
+  { id: 'tool:supplies', label: 'Supplies', icon: 'inventory_2' },
+  { id: 'tool:systems', label: 'Systems', icon: 'memory' },
+  { id: 'tool:weather', label: 'Weather', icon: 'air' },
+  { id: 'tool:tags', label: 'Tags', icon: 'sell' },
+  { id: 'tool:log', label: 'Log', icon: 'history' },
+  { id: 'act:photo', label: 'Photo', icon: 'photo_camera' },
+  { id: 'act:what', label: 'What is this', icon: 'center_focus_strong' },
+];
+export const TAG_ACTS: Act[] = TAG_KINDS.map((k) => ({ id: `tagkind:${k}`, label: TAG_INFO[k].label, icon: TAG_INFO[k].icon, color: TAG_INFO[k].color }));
 
 export class Hud {
   map: TacticalMap;
@@ -84,6 +129,14 @@ export class Hud {
   private lastKind: IslandKind = 'idle';
   private waitMax = 0;
   onIslandOpen: (kind: IslandKind) => void = () => {};
+  guardian: Guardian | null = null;
+  /** what the astronaut is looking at in the world (drives the selection outline) */
+  focus: Pick | null = null;
+  focusSelUntil = 0;
+  /** live sensor states for the Systems card, set by the app */
+  sensors = { mic: 'Off', cam: 'Off', micOk: false, camOk: false, gaze: 'Pointer' };
+  logOpen = false;
+  private logDirty = true;
 
   constructor(private data: DataBundle, private sim: Sim, private world: World) {
     this.map = new TacticalMap(data, sim);
@@ -93,6 +146,9 @@ export class Hud {
     sim.on('toast', (m: string) => this.notify(m));
     sim.on('change', () => this.refreshStatic());
     sim.on('planner', () => this.refreshPlanner());
+    sim.on('say', (m: { text: string; who: string; icon: string }) => this.showSay(m.text, m.who, m.icon));
+    sim.on('log', () => (this.logDirty = true));
+    sim.on('comms', () => (this.logDirty = true));
   }
 
   // ------------------------------------------------------------ layers
@@ -177,6 +233,7 @@ export class Hud {
     this.t += dt;
     this.updateCompass();
     this.updateChevrons();
+    this.updateFocus();
     this.map.drawRadar($('map-canvas') as HTMLCanvasElement, { t: this.t, rangeM: 650 });
     if (this.mapExpanded) this.map.draw($('map-canvas-large') as HTMLCanvasElement, { planner: this.sim.plannerRoute(), large: true, t: this.t });
     this.acc += dt;
@@ -184,6 +241,55 @@ export class Hud {
     this.acc = 0;
     this.updateTelemetry();
     this.renderIsland();
+    if (this.logOpen && this.logDirty) this.renderLog();
+  }
+
+  // ------------------------------------------------------------ selection outline ("what is this", "label this")
+  private updateFocus() {
+    const el = $('focus-ring');
+    const f = this.focus;
+    if (!f || f.type === 'sky') {
+      el.classList.remove('on');
+      return;
+    }
+    const en = f.type === 'entity' ? this.guardian?.entity(f.id!) : null;
+    const pr = this.world.project(en ? en.e : f.e, en ? en.n : f.n, f.up);
+    if (!pr.visible) {
+      el.classList.remove('on');
+      return;
+    }
+    const size = f.type === 'ground' ? 46 : Math.max(44, Math.min(320, (f.size / Math.max(1, pr.dist)) * this.world.focalPx() * 2.5));
+    el.style.width = el.style.height = `${size.toFixed(0)}px`;
+    el.style.transform = `translate(${(pr.x - size / 2).toFixed(0)}px, ${(pr.y - size / 2).toFixed(0)}px)`;
+    el.classList.add('on');
+    el.classList.toggle('ground', f.type === 'ground');
+    el.classList.toggle('sel', this.t < this.focusSelUntil);
+    $('focus-label').textContent = f.type === 'ground' ? `${km(pr.dist)}` : `${f.name} · ${km(pr.dist)}`;
+  }
+  /** Flash the outline green: "got it, this is what you meant". */
+  confirmFocus() {
+    this.focusSelUntil = this.t + 1.2;
+  }
+
+  // ------------------------------------------------------------ mission log + conversation
+  setLog(open: boolean) {
+    this.logOpen = open;
+    $('log-panel').classList.toggle('hidden', !open);
+    this.logDirty = true;
+    if (open) this.renderLog();
+  }
+  private renderLog() {
+    this.logDirty = false;
+    const s = this.sim;
+    type Row = { met: number; cls: string; icon: string; text: string; sub?: string };
+    const rows: Row[] = s.log.map((l) => ({ met: l.met, cls: l.severity, icon: l.kind === 'incident' ? 'warning' : l.kind === 'reroute' ? 'alt_route' : l.kind === 'sample' ? 'science' : l.kind === 'hazard' ? 'report' : l.kind === 'decision' ? 'check_circle' : l.kind === 'failure' ? 'dangerous' : 'info', text: l.title, sub: [l.decision, l.outcome].filter(Boolean).join(' · ') }));
+    for (const c of this.guardian?.comms ?? []) rows.push({ met: c.met, cls: c.who, icon: c.who === 'you' ? 'record_voice_over' : c.who === 'tevan' ? 'smart_toy' : c.who === 'ev2' ? 'person' : c.who === 'hab' ? 'cell_tower' : 'info', text: c.who === 'you' ? `“${c.text}”` : c.text, sub: c.who === 'you' ? 'You' : c.who === 'tevan' ? 'TEVAN' : c.who === 'ev2' ? 'EV-2' : c.who === 'hab' ? 'Habitat' : '' });
+    rows.sort((a, b) => a.met - b.met);
+    const last = rows.slice(-70);
+    $('lp-count').textContent = `${rows.length} entries`;
+    const list = $('lp-list');
+    list.innerHTML = last.map((r) => `<div class="lp-row ${r.cls}"><span class="t">${fmtMET(r.met).slice(0, 5)}</span><span class="ms">${r.icon}</span><span>${esc(r.text)}${r.sub ? `<small>${esc(r.sub)}</small>` : ''}</span></div>`).join('');
+    list.scrollTop = list.scrollHeight;
   }
 
   private halo(id: string, frac: number, text: string, band: Band) {
@@ -238,6 +344,30 @@ export class Hud {
     this.dockHalo('dock-drone', s.drone.battery / 100, s.drone.active ? 'live' : '');
     this.dockHalo('dock-sample', got / Math.max(1, samples.length), s.samplePrompt && s.waitS <= 0 ? 'ready' : '');
     this.dockHalo('dock-layers', this.activeLayers().length / 4, this.activeLayers().length ? 'live' : '');
+    const g = this.guardian;
+    this.dockHalo('dock-tools', g ? Math.min(1, g.tags.length / 6) : 0, g && g.tags.length ? 'live' : '');
+    this.dockHalo('dock-sos', g?.helpCalled ? 1 : 0, g?.helpCalled ? 'live' : '');
+    // status chips: everything that is "on" right now is visible at a glance
+    const chips: string[] = [];
+    const chip = (cls: string, icon: string, text: string) => chips.push(`<span class="${cls}"><span class="ms">${icon}</span>${esc(text)}</span>`);
+    if (g?.helpCalled) chip('warning', 'sos', `Help en route · EV-2 ${km(Math.hypot((g.entity('ev2')?.e ?? p.e) - p.e, (g.entity('ev2')?.n ?? p.n) - p.n))}`);
+    if (s.detour) chip('nav', 'near_me', `Nav: ${s.detour.label}`);
+    else if (s.goalOverride) chip('caution', 'alt_route', s.goalOverride.kind === 'habitat' ? 'Returning to habitat' : 'Diverting to shelter');
+    if (s.stability) chip('ok', 'accessibility_new', 'Stability assist');
+    for (const m of s.mods) {
+      if (m.delayS && m.delayS > 0) chip('caution', 'schedule', `${m.label} in ${fmtDur(m.delayS)}`);
+      else chip(m.spec.doseMult || m.spec.leakGph ? 'warning' : 'caution', m.spec.dust ? 'air' : m.spec.doseMult ? 'radiology' : m.spec.commsLoss ? 'signal_disconnected' : 'build', m.label);
+    }
+    if (s.world.blocked.size) chip('caution', 'landslide', `${[...s.world.blocked].map((id) => s.world.edges.get(id)!.edge.name).join(', ')} blocked`);
+    if (s.body.fallT <= 0 && s.isMoving() && s.risk > 0.0022) chip('caution', 'do_not_step', 'Poor footing');
+    if (s.pace !== 'nominal') chip('', 'speed', `${s.pace} pace`);
+    const ch = chips.slice(0, 6).join('');
+    const sc = $('status-chips');
+    if (sc.dataset.h !== ch) {
+      sc.dataset.h = ch;
+      sc.innerHTML = ch;
+    }
+    $('hud').classList.toggle('fallen', s.body.fallT > 0.3);
 
     // radar caption
     const wp = s.nextWaypoint();
@@ -275,7 +405,7 @@ export class Hud {
     };
     const wp = s.nextWaypoint();
     if (wp && s.status === 'active') {
-      if (!add(wp.e, wp.n, 6, 'target', `${esc(wp.name)} <b>${km(wp.dist)}</b>`)) {
+      if (!add(wp.e, wp.n, s.detour ? 3 : 6, s.detour ? 'target nav' : 'target', `${esc(wp.name)} <b>${km(wp.dist)}</b>`)) {
         const d = this.bearingDelta() ?? 0;
         items.push(`<div class="wp edge ${d > 0 ? 'r' : 'l'}" style="transform:translate(${d > 0 ? W * 0.8 : W * 0.2}px,${H * 0.5}px)"><div class="lab">${d > 0 ? '' : '‹ '}${esc(wp.name)}${d > 0 ? ' ›' : ''}</div></div>`);
       }
@@ -286,13 +416,39 @@ export class Hud {
       const dist = Math.hypot(poi.e - me.e, poi.n - me.n);
       if (dist > 1600 || (wp && Math.hypot(poi.e - wp.e, poi.n - wp.n) < 30)) continue;
       if (poi.kind === 'hazard') add(poi.e, poi.n, 2, 'hz', `<span class="ms">warning</span>${esc(poi.name)} <b>${km(Math.max(0, dist - (poi.radius ?? 0)))}</b>`);
-      else if (dist > 25 && this.map.layers.poi) add(poi.e, poi.n, 8, 'poi', `${esc(poi.name)} <b>${km(dist)}</b>`);
+      else if (poi.kind === 'cache') {
+        if (dist < 900 && dist > 6) add(poi.e, poi.n, 3, 'cache', `<span class="ms">inventory_2</span>${esc(poi.name)}${this.guardian?.cachesUsed.has(poi.id) ? ' · used' : ''} <b>${km(dist)}</b>`);
+      } else if (dist > 25 && this.map.layers.poi) add(poi.e, poi.n, 8, 'poi', `${esc(poi.name)} <b>${km(dist)}</b>`);
+    }
+    const g = this.guardian;
+    if (g) {
+      const tagged = new Set(g.tags.map((t) => t.follow).filter(Boolean));
+      for (const en of g.entities) {
+        if (tagged.has(en.id)) continue;
+        const dist = Math.hypot(en.e - me.e, en.n - me.n);
+        if (en.kind === 'teammate' && dist > 4) add(en.e, en.n, 2.6, 'crew', `<span class="ms">person</span>${esc(en.name)} <b>${km(dist)}</b>`);
+      }
+      for (const t of g.tags) {
+        const pos = g.tagPos(t);
+        const dist = Math.hypot(pos.e - me.e, pos.n - me.n);
+        if (s.detour?.id === `tag:${t.id}`) continue;
+        const pr = this.world.project(pos.e, pos.n, t.up + (t.follow ? 2.7 : 2.2));
+        if (!pr.visible || pr.x < -40 || pr.x > W + 40 || pr.y < -40 || pr.y > H + 40) continue;
+        items.push(`<div class="wp tag" style="--c:${TAG_INFO[t.kind].color};transform:translate(${pr.x.toFixed(0)}px,${pr.y.toFixed(0)}px)"><div class="lab"><span class="ms">${TAG_INFO[t.kind].icon}</span>${esc(t.label)} <b>${km(dist)}</b></div></div>`);
+      }
     }
     $('hud-chevrons').innerHTML = items.join('');
   }
 
   // ------------------------------------------------------------ dynamic island
+  /** TEVAN (or the crew) speaking: shown as a caption so the dialogue is readable as well as audible. */
+  showSay(text: string, who = 'tevan', icon = 'smart_toy') {
+    const name = who === 'ev2' ? 'EV-2' : who === 'hab' ? 'Habitat' : 'TEVAN';
+    this.note = { html: `<div class="i-say who-${who}"><span class="ms">${icon}</span><span><small>${name}</small>${esc(text)}</span></div>`, until: this.t + Math.min(12, 3.5 + text.length * 0.055) };
+    this.renderIsland();
+  }
   notify(msg: string, icon = 'info', ttl = 4) {
+    if (this.note && this.t < this.note.until && this.note.html.includes('i-say') && icon === 'info') return; // don't let a routine toast cut off a spoken line
     this.note = { html: `<div class="i-note"><span class="ms">${icon}</span><span>${esc(msg)}</span></div>`, until: this.t + ttl };
     this.renderIsland();
   }
@@ -321,8 +477,9 @@ export class Hud {
     if (s.status !== 'active') return;
     if (s.incident) [kind, html] = ['incident', this.incidentHtml()];
     else if (s.advisory) [kind, html] = ['advisory', this.advisoryHtml()];
-    else if (s.awaitingChoice && s.waitS <= 0) [kind, html] = ['junction', this.junctionHtml()];
     else if (this.detail && this.t < this.detail.until) [kind, html] = ['detail', this.detailHtml(this.detail.build())];
+    else if (this.note && this.t < this.note.until && this.note.html.includes('i-say')) [kind, html] = ['note', this.note.html];
+    else if (s.awaitingChoice && s.waitS <= 0) [kind, html] = ['junction', this.junctionHtml()];
     else if (s.waitS > 0) [kind, html] = ['wait', this.waitHtml()];
     else if (this.note && this.t < this.note.until) [kind, html] = ['note', this.note.html];
     else if (s.samplePrompt) [kind, html] = ['sample', `<div class="i-note ok"><span class="ms">science</span><span>Sample site · ${esc(s.samplePrompt)}</span><em>say “mark sample”</em></div>`];
@@ -372,7 +529,9 @@ export class Hud {
     const rows = d.rows.map(([k, v, c]) => `<div><span>${esc(k)}</span><b class="${c ?? ''}">${v}</b></div>`).join('');
     return `<div class="i-card i-detail"><div class="i-head"><span class="ms">${d.icon}</span><span class="i-title">${esc(d.title)}</span><b class="i-big ${d.band ? bandCls(d.band) : ''}">${d.big}</b></div>${
       d.bar !== undefined ? `<div class="i-bar ${d.band ? bandCls(d.band) : ''}"><i style="width:${(Math.max(0, Math.min(1, d.bar)) * 100).toFixed(0)}%"></i></div>` : ''
-    }<div class="i-rows">${rows}</div>${d.chart ? '<canvas class="i-chart"></canvas>' : ''}</div>`;
+    }${d.img ? `<img class="i-photo" src="${d.img}" alt="" />` : ''}${rows ? `<div class="i-rows ${d.oneCol ? 'one' : ''}">${rows}</div>` : ''}${
+      d.acts ? `<div class="i-acts ${d.cols === 2 ? 'two' : d.cols === 4 ? 'four' : ''}">${d.acts.map((a) => `<button class="i-act ${a.danger ? 'danger' : ''} ${a.on ? 'on' : ''}" data-gaze="${a.id}" data-gaze-label="${esc(a.label)}" ${a.color ? `style="--c:${a.color}"` : ''}><span class="ms">${a.icon}</span>${esc(a.label)}${a.sub ? `<small>${esc(a.sub)}</small>` : ''}</button>`).join('')}</div>` : ''
+    }${d.chart ? '<canvas class="i-chart"></canvas>' : ''}${d.hint ? `<div class="i-hint">${esc(d.hint)}</div>` : ''}</div>`;
   }
 
   private drawRouteChart(cv: HTMLCanvasElement) {
@@ -455,6 +614,40 @@ export class Hud {
     const r = s.rates;
     const c = s.data.mission.consumables;
     const tl = (amount: number, rate: number) => (rate > 1e-6 ? amount / rate : Infinity);
+    const g = this.guardian;
+    if (g) {
+      if (id === 'team') return g.teamCard();
+      if (id === 'supplies') return { ...g.suppliesCard(), oneCol: true, acts: [{ id: 'act:cache', label: 'Go to nearest cache', icon: 'near_me' }, { id: 'act:resume', label: 'Resume mission', icon: 'flag' }], cols: 2 };
+      if (id === 'weather') return g.weatherCard();
+      if (id === 'tags') return { ...g.tagsCard(), oneCol: true, hint: 'Look at something and say “label this”. “Go to tag” navigates. “Remove tag” deletes the newest.' };
+      if (id === 'log') return { ...g.logCard(), oneCol: true, hint: 'Say “show log” for the full timeline with the conversation.' };
+      if (id === 'emergency') return { icon: 'emergency_home', title: 'Emergency', big: '', rows: [], acts: EMERGENCY_ACTS(g, s), speech: 'Emergency actions. Say call for help, back to habitat, nearest shelter, resupply, rest, or stability on.', hint: 'Say the action, or look at it and say “launch this”.' };
+      if (id === 'tools') return { icon: 'apps', title: 'Tools', big: '', rows: [], acts: TOOL_ACTS, cols: 4, speech: 'Tools: team, supplies, systems, weather, tags, log, photo, and what is this.', hint: 'Say a tool’s name, or look at it and say “launch this”.' };
+      if (id === 'systems') {
+        const agg = s.agg();
+        const relay = s.drone.active && s.drone.mode === 'relay';
+        const faults = s.mods.filter((m) => !m.spec.dust && !m.spec.doseMult);
+        return {
+          icon: 'memory',
+          title: 'Suit systems',
+          big: faults.length ? `${faults.length} fault${faults.length > 1 ? 's' : ''}` : 'Nominal',
+          band: faults.length ? 'caution' : 'ok',
+          rows: [
+            ['Voice (microphone)', this.sensors.mic, this.sensors.micOk ? 'ok' : 'caution'],
+            ['Gaze (camera)', this.sensors.cam, this.sensors.camOk ? 'ok' : 'caution'],
+            ['Gaze input', this.sensors.gaze],
+            ['Comms link', agg.commsLoss && !relay ? 'No signal' : relay ? 'Via drone relay' : 'Direct', agg.commsLoss && !relay ? 'warning' : 'ok'],
+            ['Stability assist', s.stability ? 'On' : 'Off', s.stability ? 'ok' : ''],
+            ['Navigation', s.detour ? `To ${s.detour.label}` : s.goalOverride ? `Override: ${s.goalOverride.kind}` : 'Mission plan'],
+            ['Drone', s.drone.active ? `${s.drone.mode} · ${s.drone.battery.toFixed(0)}%` : `Docked · ${s.drone.battery.toFixed(0)}%`],
+            ['Footing', s.risk > 0.0022 ? 'Poor' : s.risk > 0.001 ? 'Fair' : 'Good', s.risk > 0.0022 ? 'caution' : 'ok'],
+            ['Trips', `${s.stats2.stumbles} stumbles · ${s.stats2.falls} falls`],
+            ...faults.map((m) => [m.label, 'Active', 'caution'] as [string, string, string]),
+          ],
+          speech: `${faults.length ? `${faults.length} active fault${faults.length > 1 ? 's' : ''}: ${faults.map((m) => m.label).join(', ')}.` : 'All suit systems nominal.'} Voice ${this.sensors.micOk ? 'is listening' : 'is not available'}. Gaze ${this.sensors.camOk ? 'is tracking' : 'is using the pointer'}. Stability assist ${s.stability ? 'on' : 'off'}.`,
+        };
+      }
+    }
     switch (id) {
       case 'o2': {
         const f = h.o2g / h.o2Cap;
@@ -525,7 +718,7 @@ export class Hud {
         return {
           icon: 'flight',
           title: 'Drone scout',
-          big: d.active ? d.mode : 'Docked',
+          big: d.active ? d.mode.charAt(0).toUpperCase() + d.mode.slice(1) : 'Docked',
           bar: d.active && d.mode === 'scout' ? prog : d.battery / 100,
           rows: [['Battery', `${d.battery.toFixed(0)}%`, d.battery < 25 ? 'caution' : ''], ['Range', d.active ? `${Math.hypot(d.e - p.e, d.n - p.n).toFixed(0)} m` : '—'], ['Scout path', d.active && d.mode === 'scout' ? `${(prog * 100).toFixed(0)}%` : '—'], ['Terrain revealed', `${d.revealedCells} cells`]],
           speech: d.active ? `Drone ${d.mode}, ${(prog * 100).toFixed(0)} percent along the scout path, battery ${d.battery.toFixed(0)} percent.` : `Drone docked, battery ${d.battery.toFixed(0)} percent. Say launch drone to scout ahead.`,
