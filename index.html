@@ -80,6 +80,8 @@
       <div id="hud-chevrons"></div>
       <!-- selection outline around what the astronaut is looking at in the world -->
       <div id="focus-ring"><i></i><i></i><i></i><i></i><span id="focus-label"></span></div>
+      <!-- mixed-reality ID cards for what the eyes land on (hold 3.5 s) -->
+      <div id="holo-layer"></div>
       <div id="reticle"><i></i><span id="zoom-readout"></span></div>
       <div id="gaze-cursor"></div>
       <div id="hint-line"></div>
@@ -90,7 +92,7 @@
     <div id="map-expanded" class="hidden">
       <div class="mx-panel">
         <div class="mx-head">
-          <div><div class="mx-title">Navigator</div><div class="mx-sub">Jezero Crater delta front · 4 × 4 km · click the map to add waypoints</div></div>
+          <div><div class="mx-title">Navigator</div><div class="mx-sub">Jezero Crater delta front · 4 × 4 km · scroll or pinch to zoom, drag to pan, click any place for details</div></div>
           <button id="btn-map-close" class="pill ghost" data-gaze="map-close" data-gaze-label="Close">Close</button>
         </div>
         <div class="mx-body">
@@ -107,7 +109,34 @@
             </div>
           </aside>
           <div class="mx-main">
-            <canvas id="map-canvas-large"></canvas>
+            <div id="mx-stage">
+              <canvas id="map-canvas-large"></canvas>
+              <div class="mx-top">
+                <div class="mx-search">
+                  <span class="ms">search</span>
+                  <input id="mx-search" placeholder="Search Jezero: places, labels, sol 120, 18.445, 77.44" autocomplete="off" spellcheck="false" />
+                  <button id="mx-search-x" title="Clear"><span class="ms">close</span></button>
+                  <div id="mx-results"></div>
+                </div>
+                <div id="mx-chips">
+                  <button data-cat="shelter"><span class="ms">roofing</span>Shelters</button>
+                  <button data-cat="cache"><span class="ms">inventory_2</span>Supply caches</button>
+                  <button data-cat="sample"><span class="ms">science</span>Science sites</button>
+                  <button data-cat="hazard"><span class="ms">warning</span>Hazards</button>
+                  <button data-cat="labels"><span class="ms">sell</span>My labels</button>
+                  <button data-cat="crew"><span class="ms">group</span>Crew</button>
+                </div>
+              </div>
+              <div id="mx-modes"><button data-mode="explore" class="on"><span class="ms">explore</span>Explore</button><button data-mode="plan"><span class="ms">conversion_path</span>Plan route</button></div>
+              <div class="mx-ctl">
+                <button id="mx-locate" title="Centre on me"><span class="ms">my_location</span></button>
+                <button id="mx-fit" title="Whole study area"><span class="ms">zoom_out_map</span></button>
+                <div class="mx-zg"><button id="mx-zin" title="Zoom in (+)"><span class="ms">add</span></button><button id="mx-zout" title="Zoom out (−)"><span class="ms">remove</span></button></div>
+              </div>
+              <div class="mx-north" title="North is up"><span>N</span></div>
+              <div id="mx-card" class="hidden"></div>
+              <div id="mx-coords"></div>
+            </div>
             <div class="mx-chart"><div class="mx-sec">Vitals forecast along route <span class="dim">solid = so far · dashed = forecast · white = planned</span></div><canvas id="planner-chart"></canvas></div>
           </div>
         </div>
