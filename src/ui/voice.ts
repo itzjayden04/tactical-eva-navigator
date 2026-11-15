@@ -127,6 +127,8 @@ export function parseCommand(text: string, aliases: string[] = []): Command | nu
   if (has(/\b(stop|pause) listening\b|\bgo to sleep\b|\bmic off\b/)) return { type: 'sleep' };
   if (has(/\b(resume|start) listening\b|\bwake up\b|\bmic on\b/)) return { type: 'wake' };
 
+  // "open emergency" opens the Emergency panel; it is NOT a mayday (that needs distress words)
+  if (/^(?:(?:open|show|display|bring up|pull up|launch|view|go to|check)(?: me)?(?: the| my)? )?(?:emergency|emergencies|sos|quick actions|emergency actions)(?: panel| menu| options| actions| screen| tab| page| list| button)?$/.test(t)) return { type: 'tool', tool: 'emergency' };
   // ---- emergencies first: these must never be mistaken for anything else
   if (has(/\b(mayday|s o s|sos|call (for )?help|i need help|send help|help me|emergency call|call (the )?(habitat|base|team))\b/)) return { type: 'emergency', action: 'help' };
   if (has(/\b(back|return|go|take me|head|route|get me|navigate) (back )?(to )?(the )?(habitat|hab|home|base)\b|\babort (the )?(eva|mission)\b|\bgo home\b/) && !has(/\b(drone|scout)\b/)) return { type: 'emergency', action: 'habitat' };

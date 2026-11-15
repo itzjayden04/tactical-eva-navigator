@@ -55,3 +55,13 @@ it('voice lock and voice check commands', async () => {
   expect(parseCommand('turn on voice lock')).toEqual({ type: 'voiceLock', on: true });
   expect(parseCommand('voice check')).toEqual({ type: 'calibrate', what: 'voice' });
 });
+
+it('"open emergency" opens the panel; only distress phrases send a mayday', () => {
+  for (const s of ['open emergency', 'open the emergency panel', 'show emergency', 'emergency menu', 'open sos'])
+    expect(understand([s])?.cmd).toEqual({ type: 'tool', tool: 'emergency' });
+  for (const s of ['mayday', 'help me', 'i need help', 'call for help', 'send help'])
+    expect(understand([s])?.cmd).toEqual({ type: 'emergency', action: 'help' });
+  // a mayday guessed from loose wording is always confirmed first
+  const g = understand(['im in trouble out here']);
+  if (g?.cmd.type === 'emergency') expect(g.confidence).toBeLessThan(RUN_AT);
+});

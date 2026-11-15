@@ -1259,8 +1259,9 @@ async function boot() {
       camInd.dataset.state = camOn ? 'on' : gaze.state === 'denied' || gaze.state === 'error' ? 'err' : '';
       camInd.title = camOn ? 'Camera: tracking your eyes' : gaze.state === 'noface' ? 'Camera on, no face found' : gaze.lastError || 'Camera off: pointer stands in for gaze';
       const micOn = voice.state === 'listening' || voice.state === 'hearing';
-      micInd.dataset.state = voice.state === 'hearing' ? 'hearing' : micOn ? 'on' : '';
-      micInd.title = micOn ? 'Microphone: listening' : voice.state === 'asleep' ? 'Microphone asleep: say “resume listening”' : VOICE_ERRORS[voice.lastError] ?? 'Microphone off';
+      const tevanTalking = micOn && voice.isSpeaking();
+      micInd.dataset.state = tevanTalking ? 'paused' : voice.state === 'hearing' ? 'hearing' : micOn ? 'on' : '';
+      micInd.title = tevanTalking ? 'Microphone paused while TEVAN speaks' : micOn ? 'Microphone: listening' : voice.state === 'asleep' ? 'Microphone asleep: say “resume listening”' : VOICE_ERRORS[voice.lastError] ?? 'Microphone off';
       hud.sensors = {
         mic: micOn ? 'Listening' : voice.state === 'asleep' ? 'Asleep' : voice.supported ? (voice.state === 'denied' ? 'Blocked' : 'Off') : 'Not supported',
         micOk: micOn,
