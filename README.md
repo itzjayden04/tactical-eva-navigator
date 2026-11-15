@@ -6,7 +6,7 @@ A helmet navigator for astronauts on a Marswalk, built for NASA Space Apps 2026 
 
 There are no modes. There's no training mode, VR mode or AR mode, only the astronaut on an EVA.
 
-## Quick start (judges and visitors)
+## Quick start
 
 > **Use Google Chrome or Microsoft Edge on a laptop or desktop with a webcam and microphone.**
 > Firefox can't do voice commands, and Safari's support is unreliable.
