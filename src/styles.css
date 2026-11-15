@@ -539,6 +539,7 @@ body.drone-live #drone-pip { opacity: 1; transform: rotateY(-18deg) scale(1); po
 #calib-meter b { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--caution); left: 0; }
 #calib-heard { min-height: 20px; font-size: 13px; color: var(--dim); max-width: 460px; }
 #calib-heard b { color: var(--ink); }
+.calib-say { display: inline-block; margin-top: 10px; font-size: 22px; color: var(--ink); letter-spacing: .01em; }
 
 
 /* ===================== Artemis-era look =====================

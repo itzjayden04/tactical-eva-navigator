@@ -1,4 +1,3 @@
-import { frameShape } from './voiceprint';
 /**
  * VOICE: hands-free commands from the astronaut's real microphone.
  *
@@ -52,7 +51,7 @@ export type Command =
   | { type: 'undo' }
   | { type: 'jump' }
   | { type: 'where' }
-  | { type: 'voiceLock'; on?: boolean };
+  | { type: 'forgetAccent' };
 
 const LAYER_WORDS: [RegExp, LayerWord][] = [
   [/\b(radiation|dose map|rad)\b/, 'radiation'],
@@ -199,8 +198,8 @@ export function parseCommand(text: string, aliases: string[] = []): Command | nu
   if (has(/\bzoom in\b|\bmagnify\b|\benhance\b/)) return { type: 'zoom', dir: 'in' };
   if (has(/\bzoom out\b/)) return { type: 'zoom', dir: 'out' };
   if (has(/\b(reset|normal) zoom\b|\bzoom (reset|normal)\b/)) return { type: 'zoom', dir: 'reset' };
-  if (has(/\bvoice ?(lock|match|matching|id|print|verification)\b/)) return { type: 'voiceLock', on: has(/\b(off|disable|stop|remove)\b/) ? false : has(/\b(on|enable|start)\b/) ? true : undefined };
-  if (has(/\b(voice|mic|microphone) (check|calibration|test)\b|\b(calibrate|recalibrate|check|test) (my |the )?(voice|mic|microphone)\b/)) return { type: 'calibrate', what: 'voice' };
+  if (has(/\b(forget|reset|clear|delete|erase) (my |the )?(accent|pronunciations?|voice training|learned words)\b/)) return { type: 'forgetAccent' };
+  if (has(/\b(voice|mic|microphone|accent) (check|calibration|test|training)\b|\b(calibrate|recalibrate|check|test|train|learn) (my |the )?(voice|mic|microphone|accent|pronunciation)\b/)) return { type: 'calibrate', what: 'voice' };
   if (has(/\b(calibrate|recalibrate)\b/)) return { type: 'calibrate' };
 
   if (has(/\b(close|exit|hide) (the )?(map|planner|panel)\b/) || /^(close|back|exit|done)$/.test(t)) return { type: 'close' };
@@ -459,7 +458,6 @@ export class MicMeter {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private buf = new Float32Array(2048);
-  private fbuf = new Float32Array(1024);
   private stream: MediaStream | null = null;
   /** current level in dBFS (about -90 silence .. 0 clipping) */
   db = -90;
@@ -498,12 +496,6 @@ export class MicMeter {
     const l = Math.max(0, Math.min(1, (this.db - this.noiseDb - 4) / 30));
     this.level += (l - this.level) * 0.35;
     return this.db;
-  }
-  /** Spectral shape of the current frame for the voiceprint (mel bands, loudness removed). */
-  shape(): Float32Array | null {
-    if (!this.ctx || !this.analyser) return null;
-    this.analyser.getFloatFrequencyData(this.fbuf);
-    return frameShape(this.fbuf, this.ctx.sampleRate);
   }
   /** Fundamental frequency of the current frame (autocorrelation), or null when unvoiced. */
   pitch(): number | null {

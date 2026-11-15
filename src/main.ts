@@ -12,13 +12,15 @@ import { Guardian, TAG_INFO, bearingWord, type Pick, type TagKind } from './core
 import { GazeTracker } from './ui/gaze';
 import { HoloLabels, identifiable } from './ui/holo';
 import { MapNav } from './ui/mapnav';
-import { enrol, verify, type VoiceFrame, type VoicePrint } from './ui/voiceprint';
-import { understand, yesNo, RUN_AT, type Understood } from './ui/intent';
+import { loadProfile, saveProfile, clearProfile, learnSentence, expand, recall, remember } from './ui/accent';
+import { understand, yesNo, grammarLabel, RUN_AT, type Understood } from './ui/intent';
 import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** short commands read aloud in the voice check, chosen to cover the sounds commands depend on */
+const ACCENT_PHRASES = ['Open the map', 'Check oxygen level', 'Open emergency', 'Label this as a hazard', 'Show radiation dose'];
 const FEATURES: string[] = ['mission', 'o2', 'h2o', 'power', 'dose', 'fatigue', 'map', 'route', 'drone', 'sample', 'layers', 'tools', 'emergency', 'team', 'supplies', 'systems', 'weather', 'tags', 'log'];
 
 async function boot() {
@@ -126,46 +128,19 @@ async function boot() {
   // alarms and chimes are not speech: don't let the recogniser turn them into words
   audio.onPlay = (slot) => voice.ignoreFor(slot.startsWith('alert') ? 1400 : 700);
   // ---------------------------------------------------------------- understanding speech (grammar first, then intent)
-  // ---------------------------------------------------------------- voice match (only the enrolled astronaut's voice)
-  /** voiced mic frames of the last few seconds (never frames captured while TEVAN talks) */
-  const vframes: VoiceFrame[] = [];
-  let vprint: VoicePrint | null = null;
-  let voiceLock = true;
-  let voiceRejects = 0;
-  let lastPitchAt = 0;
-  const captureVoice = (now: number) => {
-    if (!meter.ready) return;
-    meter.sample();
-    while (vframes.length && now - vframes[0].t > 6000) vframes.shift();
-    if (voice.isSpeaking() || meter.db < meter.noiseDb + 10) return;
-    const shape = meter.shape();
-    if (!shape) return;
-    let pitch: number | null = null;
-    if (now - lastPitchAt > 45) {
-      lastPitchAt = now;
-      pitch = meter.pitch();
-    }
-    vframes.push({ t: now, shape, pitch });
-  };
-  /** true when this spoken command may run (sounds like the enrolled voice, or nothing to compare) */
-  const voiceAllowed = (t: string): boolean => {
-    if (!voiceLock || !vprint) return true;
-    const now = performance.now();
-    const m = verify(vprint, vframes.filter((f) => now - f.t < 4000));
-    console.info(`[TEVAN voice match] "${t}" ${m.accept ? 'accepted' : 'REJECTED'} · timbre ${m.timbre.toFixed(2)} · pitch ${m.semitones === null ? 'n/a' : m.semitones.toFixed(1) + ' st'} · ${m.frames} frames · ${m.reason}`);
-    if (m.accept) {
-      voiceRejects = 0;
-      return true;
-    }
-    voiceRejects++;
-    setCapsule('miss', voiceRejects >= 3 ? `Ignored, ${m.reason}. Not you? Type “voice check” to re-enrol, or “voice lock off”` : `Ignored “${t}”: ${m.reason}`, voiceRejects >= 3 ? 7000 : 2600);
-    if (sim.status === 'active') sim.addLog({ kind: 'info', title: 'Voice command ignored', severity: 'info', outcome: `“${t}”: ${m.reason}` });
-    return false;
-  };
+  // ---------------------------------------------------------------- accent (how the recogniser hears this astronaut)
+  // Anyone may give commands (no speaker lock); TEVAN only adapts to pronunciation and never hears itself.
+  const accent = loadProfile();
+  for (const [heard, meant] of Object.entries(accent.words)) if (meant === 'tevan' && !voice.aliases.includes(heard)) voice.aliases.push(heard);
   /** a "Did you mean …?" question waiting for yes / no */
-  let pendingIntent: { u: Understood; until: number } | null = null;
-  const runUnderstood = (u: Understood, source: 'voice' | 'typed') => {
+  let pendingIntent: { u: Understood; until: number; heard: string } | null = null;
+  const runUnderstood = (u: Understood, source: 'voice' | 'typed', confirmedFrom?: string) => {
     if (sim.status === 'active') guardian.record('you', u.heard);
+    // "Did you mean …?" → yes: remember how this phrase sounds, so next time it runs straight away
+    if (confirmedFrom && source === 'voice') {
+      remember(accent, confirmedFrom, u.cmd);
+      saveProfile(accent);
+    }
     const reply = exec(u.cmd, source);
     // show what TEVAN understood when it went by meaning, so the astronaut can trust (or correct) it
     setCapsule('ok', u.via === 'intent' ? `≈ ${u.label} · ${reply.text || u.heard}` : reply.text || u.heard, 2800);
@@ -176,14 +151,12 @@ async function boot() {
   };
   const handleUtterance = (alts: string[], source: 'voice' | 'typed') => {
     const t = alts[0] ?? '';
-    // typed commands are always trusted; spoken ones must sound like the enrolled astronaut
-    if (source === 'voice' && !voiceAllowed(t)) return;
     if (pendingIntent && performance.now() < pendingIntent.until) {
       const yn = yesNo(t);
       if (yn) {
         const p = pendingIntent;
         pendingIntent = null;
-        if (yn === 'yes') runUnderstood(p.u, source);
+        if (yn === 'yes') runUnderstood(p.u, source, p.heard);
         else {
           setCapsule('miss', 'Cancelled', 1600);
           if (source === 'voice') voice.speak('Okay.');
@@ -192,14 +165,17 @@ async function boot() {
       }
     }
     pendingIntent = null;
-    const u = understand(alts, voice.aliases);
+    // spoken: try the recogniser's guesses rewritten with this astronaut's learned pronunciations first
+    const tries = source === 'voice' ? expand(accent, alts) : alts;
+    const known = source === 'voice' ? recall(accent, alts) : null;
+    const u: Understood | null = known ? { cmd: known, confidence: 1, via: 'grammar', label: grammarLabel(known), intent: known.type, heard: t, fixes: ['learned phrase'] } : understand(tries, voice.aliases);
     if (source === 'voice' && voice.asleep && u?.cmd.type !== 'wake') return;
     if (!u) {
       setCapsule('miss', source === 'typed' ? `Not understood: ${t}` : t, 1800);
       return;
     }
     if (u.confidence < RUN_AT) {
-      pendingIntent = { u, until: performance.now() + 12000 };
+      pendingIntent = { u, until: performance.now() + 12000, heard: t };
       const q = u.runnerUp ? `Did you mean “${u.label}” or “${u.runnerUp.label}”?` : `Did you mean “${u.label}”?`;
       setCapsule('ask', `${q} Say yes or no`, 12000);
       if (source === 'voice') voice.speak(`Did you mean ${u.label.toLowerCase()}?`);
@@ -207,8 +183,13 @@ async function boot() {
     }
     runUnderstood(u, source);
   };
+  /** while the voice check is listening, finished sentences go here instead of the command parser */
+  let calibFinal: ((alts: string[]) => void) | null = null;
   voice.onFinal = (t, alts) => {
-    if (voiceCheck) return; // the "Hi TEVAN" check is listening, not the command parser
+    if (voiceCheck) {
+      calibFinal?.(alts.length ? alts : [t]);
+      return;
+    }
     handleUtterance(alts.length ? alts : [t], 'voice');
   };
 
@@ -430,7 +411,6 @@ async function boot() {
     };
     const speech: number[] = [];
     const pitches: number[] = [];
-    const enrolFrames: VoiceFrame[] = [];
     let lastLoud = 0;
     t0 = performance.now();
     while (performance.now() - t0 < 9000 && !skipCalib) {
@@ -439,8 +419,6 @@ async function boot() {
         speech.push(meter.db);
         const p = meter.pitch();
         if (p) pitches.push(p);
-        const shape = meter.shape();
-        if (shape) enrolFrames.push({ t: now, shape, pitch: p });
         lastLoud = now;
       }
       if (finalAt && now - finalAt > 450) break;
@@ -448,32 +426,55 @@ async function boot() {
       if (noText && speech.length > 12 && now - lastLoud > 900) break;
       await sleep(30);
     }
-    voice.onHeard = () => {};
     const speechDb = speech.length > 6 ? [...speech].sort((a, b) => a - b)[Math.floor(speech.length * 0.8)] : null;
     const snr = speechDb !== null ? speechDb - meter.noiseDb : null;
     const pitch = pitches.length >= 4 ? med(pitches) : null;
     let learned = '';
     const name = normalise(heard).replace(/^(hi|hey|hello|high|hay|ok|okay|hi there) /, '').trim();
     if (name && name.split(' ').length <= 2 && !WAKE_ALIASES.includes(name) && !parseCommand(name)) {
-      voice.aliases.push(name);
+      if (!voice.aliases.includes(name)) voice.aliases.push(name);
+      accent.words[name] = 'tevan';
       learned = name;
     }
+
+    // ---- accent: read a few commands; whatever the recogniser makes of them is learned for this voice
+    const learnedWords: [string, string][] = [];
+    let read = 0;
+    if (heard && voice.supported && !skipCalib) {
+      for (let i = 0; i < ACCENT_PHRASES.length && !skipCalib; i++) {
+        const phrase = ACCENT_PHRASES[i];
+        $('calib-title').textContent = `Accent ${i + 1} of ${ACCENT_PHRASES.length}`;
+        txt.innerHTML = `Read this aloud in your normal way of speaking:<br><b class="calib-say">“${esc(phrase)}”</b>`;
+        $('calib-heard').textContent = '';
+        let got: string[] | null = null;
+        calibFinal = (alts) => (got = alts);
+        const ts = performance.now();
+        while (!got && !skipCalib && performance.now() - ts < 7000) await sleep(50);
+        calibFinal = null;
+        const alts = got as string[] | null;
+        if (!alts) continue;
+        read++;
+        const subs = learnSentence(accent, phrase, alts);
+        learnedWords.push(...subs);
+        $('calib-heard').innerHTML = `Heard: <b>${esc(alts[0])}</b>${subs.length ? ` · learned ${subs.map(([f, t]) => `“${esc(f)}” = ${esc(t)}`).join(', ')}` : ' · understood as is'}`;
+        await sleep(900);
+      }
+    }
+    voice.onHeard = () => {};
+    saveProfile(accent);
     if (pitch) voice.replyPitch = pitch < 165 ? 1.2 : 0.8;
-    const vp = enrol(enrolFrames);
-    if (vp) vprint = vp;
     const lines: string[] = [];
     if (heard) lines.push(`Heard “${heard}”.${learned ? ` TEVAN will also answer to “${learned}” for your voice.` : ''}`);
     else if (!voice.supported) lines.push('This browser has no speech recognition. Use Chrome or Edge, or press Enter to type commands.');
     else lines.push(VOICE_ERRORS[voice.lastError] ?? 'No words came back from the recogniser. The bubble beside the top pill shows what TEVAN hears during the EVA.');
+    if (read) lines.push(learnedWords.length ? `Accent learned from ${read} phrases: ${learnedWords.slice(0, 4).map(([f, t]) => `“${f}” means ${t}`).join(', ')}${learnedWords.length > 4 ? '…' : ''}.` : `All ${read} phrases were understood as said, so no corrections were needed.`);
     if (snr !== null) lines.push(`Your voice is ${snr.toFixed(0)} dB above the room noise: ${snr >= 20 ? 'clear' : snr >= 12 ? 'usable, speak up a little' : 'weak, move closer or use a headset'}.`);
     else if (!ok) lines.push('Could not read the microphone level.');
-    if (vp) lines.push('Voiceprint saved: spoken commands are now only taken in your voice (typed commands always work).');
-    if (pitch) lines.push(`Pitch about ${pitch.toFixed(0)} Hz, so TEVAN replies in a ${pitch < 165 ? 'higher' : 'lower'} voice that is easy to tell apart from yours.`);
     $('calib-title').textContent = heard ? 'Voice check complete' : speechDb !== null ? 'Voice level measured' : 'No voice detected';
     txt.textContent = lines.join(' ');
-    const profile = { heard, learnedAlias: learned, noiseDb: Math.round(meter.noiseDb), speechDb: speechDb === null ? null : Math.round(speechDb), pitchHz: pitch ? Math.round(pitch) : null, voiceprintFrames: vp?.frames ?? 0 };
+    const profile = { heard, learnedAlias: learned, noiseDb: Math.round(meter.noiseDb), speechDb: speechDb === null ? null : Math.round(speechDb), pitchHz: pitch ? Math.round(pitch) : null, accentPhrases: read, accentWords: Object.keys(accent.words).length };
     sim.extra.voiceCheck = profile;
-    console.info('[TEVAN voice check]', profile);
+    console.info('[TEVAN voice check]', profile, accent.words);
     if (heard) voice.speak('Hi. I hear you. Voice check complete.');
     await waitOrSkip(heard ? 3200 : 4200);
     alive = false;
@@ -668,7 +669,7 @@ async function boot() {
         big: '',
         rows: [
           ['Speak naturally', 'TEVAN understands meaning, not exact words, and asks “did you mean…?” when unsure'],
-          ['Voice lock', 'only your enrolled voice runs spoken commands · type “voice lock off” to disable'],
+          ['Your accent', 'the voice check learns how you pronounce commands · “forget my accent” resets it'],
           ['Just look at a rock', 'its ID card appears and stays 3.5 s'],
           ['Look + “what is this”', 'TEVAN identifies it'],
           ['Look + “label this (as hazard)”', 'coloured tag, follows movers'],
@@ -974,10 +975,10 @@ async function boot() {
       case 'jump':
         r = { text: sim.jump() ? 'Jump' : 'Can’t jump right now' };
         break;
-      case 'voiceLock':
-        voiceLock = cmd.on ?? !voiceLock;
-        voiceRejects = 0;
-        r = say(!vprint ? 'No voiceprint yet. Say or type voice check to record one.' : voiceLock ? 'Voice lock on. I only take spoken commands in your voice.' : 'Voice lock off. I take spoken commands from any voice.');
+      case 'forgetAccent':
+        clearProfile(accent);
+        voice.aliases.length = 0;
+        r = say('Done. I forgot your learned pronunciations. Say voice check to teach me again.');
         break;
       case 'where': {
         const p = sim.position();
@@ -1237,7 +1238,7 @@ async function boot() {
     audio.setLevel('quake_rumble', world.quake * 0.6);
     world.update(dt);
     world.render($('drone-pip'));
-    if (!voiceCheck) captureVoice(now);
+    if (!voiceCheck && meter.ready) meter.sample();
     if (sim.status === 'active') {
       hud.update(dt);
       // gaze → target (pointer stands in when no camera)
