@@ -1,3 +1,5 @@
 node_modules
 dist
 public/mediapipe
+.nasa-cache/
+__pycache__/

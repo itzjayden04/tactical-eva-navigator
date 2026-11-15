@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TEVAN · Tactical EVA Navigator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block" rel="stylesheet" />
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
@@ -134,6 +134,7 @@
     <!-- ===================== BOOT (pre-egress) ===================== -->
     <div id="briefing" class="screen hidden">
       <div class="boot">
+        <svg class="trajectory" viewBox="0 0 420 220" aria-hidden="true"><path d="M10 200 C 120 40, 300 10, 410 60" fill="none" stroke="#fc3d21" stroke-width="3" stroke-linecap="round" /><path d="M40 214 C 150 80, 300 50, 404 84" fill="none" stroke="#27aae1" stroke-width="1.5" stroke-linecap="round" opacity=".7" /><circle cx="410" cy="60" r="5" fill="#fc3d21" /></svg>
         <div class="boot-brand">
           <div class="tevan-mark"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="21" fill="none" stroke="currentColor" stroke-width="2" opacity=".35" /><path d="M24 7a17 17 0 0 1 17 17" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" /><circle cx="24" cy="24" r="5" fill="currentColor" /></svg></div>
           <div><div class="tevan-word">TEVAN</div><div class="tevan-sub">Tactical EVA Navigator</div></div>
@@ -159,7 +160,8 @@
           <button id="btn-skip-calib" class="pill ghost">Begin without gaze</button>
           <button id="btn-begin" class="pill solid big">Calibrate gaze &amp; begin EVA</button>
         </div>
-        <div class="boot-foot"><span id="brief-datasource">DATA: SYNTHETIC</span><span>Gaze is processed on this device. Speech uses the browser's recognition service. Move with W A S D · Space to jump · drag to look · scroll to zoom.</span></div>
+        <div id="brief-credits" class="boot-credits"></div>
+        <div class="boot-foot"><span id="brief-datasource" class="data-badge synthetic">Synthetic terrain</span><span>Gaze is processed on this device. Speech uses the browser's recognition service. Move with W A S D · Space to jump · drag to look · scroll to zoom.</span></div>
       </div>
     </div>
 

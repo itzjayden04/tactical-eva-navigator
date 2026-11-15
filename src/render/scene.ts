@@ -140,6 +140,7 @@ export class World {
     this.buildObstacles();
     this.sim.on('obstacles', () => this.buildObstacles());
     this.buildTrack();
+    this.buildRoverTracks();
     this.buildPois();
 
     // route chevrons (both modes)
@@ -265,7 +266,43 @@ export class World {
     tex.repeat.set(sizeE / 9, sizeN / 9);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 8;
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, roughness: 0.97, metalness: 0 });
+    let mat: THREE.MeshStandardMaterial;
+    const im = this.data.imagery;
+    if (im) {
+      // REAL DATA: drape the HiRISE orthophoto (≈1 m/px) over the HiRISE DTM, tinted to Mars colour,
+      // with the regolith photo multiplied in for close-up grain under the boots.
+      const uv = geo.attributes.uv as THREE.BufferAttribute;
+      for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) - im.originE) / im.sizeE, 1 - (im.originN + pos.getZ(i)) / im.sizeN);
+      uv.needsUpdate = true;
+      for (let i = 0; i < pos.count; i++) {
+        // HiRISE RED is greyscale: let the vertex colour carry hue only, a little lighter
+        colors[i * 3] = Math.min(1, colors[i * 3] * 1.7);
+        colors[i * 3 + 1] = Math.min(1, colors[i * 3 + 1] * 1.7);
+        colors[i * 3 + 2] = Math.min(1, colors[i * 3 + 2] * 1.7);
+      }
+      (geo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+      const ortho = new THREE.TextureLoader().load(im.url);
+      ortho.colorSpace = THREE.SRGBColorSpace;
+      ortho.anisotropy = 8;
+      mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: ortho, roughness: 0.97, metalness: 0 });
+      const detailRepeat = new THREE.Vector2(sizeE / 9, sizeN / 9);
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.detail = { value: tex };
+        sh.uniforms.detailRepeat = { value: detailRepeat };
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <map_pars_fragment>', '#include <map_pars_fragment>\nuniform sampler2D detail; uniform vec2 detailRepeat;')
+          .replace(
+            '#include <map_fragment>',
+            `#include <map_fragment>
+            vec2 duv = vMapUv * detailRepeat;
+            vec3 dt = texture2D(detail, duv).rgb;
+            float dl = dot(dt, vec3(0.299, 0.587, 0.114));
+            diffuseColor.rgb *= mix(1.0, dl / 0.42, 0.55);`,
+          );
+      };
+    } else {
+      mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, roughness: 0.97, metalness: 0 });
+    }
     this.terrain = new THREE.Mesh(geo, mat);
     this.worldGroup.add(this.terrain);
   }
@@ -323,6 +360,37 @@ export class World {
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#e9c19a', transparent: true, opacity: 0.16 }));
       this.worldGroup.add(line);
     }
+  }
+
+  /** Real data: Perseverance's wheel tracks along its actual route (NASA/JPL traverse), draped on the HiRISE terrain. */
+  private buildRoverTracks() {
+    const t = this.data.traverse;
+    if (!t || t.points.length < 2) return;
+    const dense: [number, number][] = [];
+    for (let i = 1; i < t.points.length; i++) {
+      const [e0, n0] = t.points[i - 1];
+      const [e1, n1] = t.points[i];
+      const L = Math.hypot(e1 - e0, n1 - n0);
+      const k = Math.max(1, Math.ceil(L / 3));
+      for (let j = 0; j < k; j++) dense.push([e0 + ((e1 - e0) * j) / k, n0 + ((n1 - n0) * j) / k]);
+    }
+    const pos: number[] = [];
+    for (const side of [-1.35, 1.35]) {
+      for (let i = 1; i < dense.length; i++) {
+        const [e0, n0] = dense[i - 1];
+        const [e1, n1] = dense[i];
+        const L = Math.hypot(e1 - e0, n1 - n0) || 1;
+        const ox = (-(n1 - n0) / L) * side;
+        const oy = ((e1 - e0) / L) * side;
+        const a = this.v(e0 + ox, n0 + oy, 0.03);
+        const b = this.v(e1 + ox, n1 + oy, 0.03);
+        pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: '#3a2418', transparent: true, opacity: 0.45 }));
+    this.worldGroup.add(lines);
   }
 
   /** Real boulders and rockfall rubble: the same objects the simulation collides with. */

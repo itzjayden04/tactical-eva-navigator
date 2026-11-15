@@ -1,0 +1,69 @@
+{
+  "label": "NASA JEZERO · HiRISE",
+  "grids": {
+    "elevation": {
+      "file": "elevation.f32",
+      "width": 513,
+      "height": 513,
+      "originE": -2000.0,
+      "originN": 2000.0,
+      "cell": 7.8125,
+      "units": "m"
+    },
+    "rocks": {
+      "file": "rocks.f32",
+      "width": 257,
+      "height": 257,
+      "originE": -2000.0,
+      "originN": 2000.0,
+      "cell": 15.625,
+      "units": "0..1"
+    },
+    "radiation": {
+      "file": "radiation.f32",
+      "width": 257,
+      "height": 257,
+      "originE": -2000.0,
+      "originN": 2000.0,
+      "cell": 15.625,
+      "units": "µSv/h"
+    },
+    "dust": {
+      "file": "dust.f32",
+      "width": 257,
+      "height": 257,
+      "originE": -2000.0,
+      "originN": 2000.0,
+      "cell": 15.625,
+      "units": "index"
+    }
+  },
+  "imagery": {
+    "file": "ortho.jpg",
+    "map": "ortho_map.jpg",
+    "originE": -2000.0,
+    "originN": 2000.0,
+    "sizeE": 4000.0,
+    "sizeN": 4000.0
+  },
+  "traverse": "traverse.json",
+  "layout": "layout.json",
+  "geo": {
+    "lat0": 18.44462715,
+    "lon0": 77.45088573,
+    "offsetE": 1200.0,
+    "offsetN": -400.0,
+    "radius": 3396190.0
+  },
+  "conditions": {
+    "surfaceTempC": -63,
+    "dustTau": 0.6,
+    "gcrDoseRateuSvH": 28
+  },
+  "credits": [
+    "Elevation: HiRISE DTM mosaic, Mars 2020 TRN (NASA/JPL-Caltech/UArizona/USGS)",
+    "Imagery: HiRISE orthomosaic, Mars 2020 TRN (NASA/JPL-Caltech/UArizona/USGS)",
+    "Rover route: Perseverance traverse, NASA/JPL MMGIS",
+    "Raw images: NASA/JPL-Caltech Mars 2020 raw image feed"
+  ]
+}

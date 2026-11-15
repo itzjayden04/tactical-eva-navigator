@@ -201,7 +201,7 @@ function buildRocks(): Grid {
   return g;
 }
 
-const POIS: Poi[] = [
+export const POIS: Poi[] = [
   { id: 'hab', kind: 'habitat', name: 'Habitat', e: 500, n: -1500, shielding: 0.02, radius: 12, note: 'Pressurised habitat and airlock' },
   { id: 's1', kind: 'sample', name: 'Delta Front Outcrop', e: -60, n: -340, note: 'Layered delta sediments, fine-grained mudstone' },
   { id: 's2', kind: 'sample', name: 'Rim Megabreccia', e: -1000, n: 560, note: 'Impact breccia blocks from crater rim' },
@@ -214,7 +214,7 @@ const POIS: Poi[] = [
   { id: 'hz-rim', kind: 'hazard', name: 'Rim Scree Slope', e: -700, n: 520, radius: 220, note: 'Loose scree up to 25°' },
 ];
 
-const MISSION: MissionDef = {
+export const MISSION: MissionDef = {
   id: 'eva-03',
   title: 'EVA-03 · JEZERO CRATER',
   subtitle: 'Delta Front Sample Traverse',
@@ -370,6 +370,7 @@ export const mockJezeroProvider: DataProvider = {
     const conditions = { surfaceTempC: -63, dustTau: 0.6, gcrDoseRateuSvH: 28 };
     return {
       label: 'SYNTHETIC JEZERO v0',
+      source: 'synthetic',
       elevation,
       radiation: buildRadiation(elevation, conditions.gcrDoseRateuSvH),
       dust: buildDust(elevation),

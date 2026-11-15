@@ -12,6 +12,7 @@ import { Sim, PACE_V } from '../core/sim';
 import { bandCore, bandDose, bandFatigue, bandFrac, bandHr, Band, RESERVE_FRAC, FATIGUE_REROUTE } from '../core/health';
 import { walkSpeed } from '../core/route';
 import { LAYER_INFO, LayerId, TacticalMap } from './map';
+import { RoverFeed, cameraName } from '../data/roverFeed';
 import { drawChart } from './chart';
 import type { World } from '../render/scene';
 import type { FeatureId } from './voice';
@@ -60,6 +61,8 @@ export interface Detail {
   cols?: 2 | 3 | 4;
   oneCol?: boolean;
   img?: string;
+  /** thumbnails (Perseverance raw images) */
+  gallery?: { src: string; caption: string; href?: string }[];
   hint?: string;
 }
 export interface Act {
@@ -94,6 +97,7 @@ export const FEATURE_LABEL: Record<string, string> = {
   weather: 'Weather',
   tags: 'Tags',
   log: 'Mission log',
+  rover: 'Rover feed',
   'log-close': 'Close log',
 };
 
@@ -114,6 +118,7 @@ export const TOOL_ACTS: Act[] = [
   { id: 'tool:log', label: 'Log', icon: 'history' },
   { id: 'act:photo', label: 'Photo', icon: 'photo_camera' },
   { id: 'act:what', label: 'What is this', icon: 'center_focus_strong' },
+  { id: 'tool:rover', label: 'Rover feed', icon: 'satellite_alt', sub: 'Perseverance' },
 ];
 export const TAG_ACTS: Act[] = TAG_KINDS.map((k) => ({ id: `tagkind:${k}`, label: TAG_INFO[k].label, icon: TAG_INFO[k].icon, color: TAG_INFO[k].color }));
 
@@ -130,6 +135,7 @@ export class Hud {
   private waitMax = 0;
   onIslandOpen: (kind: IslandKind) => void = () => {};
   guardian: Guardian | null = null;
+  feed = new RoverFeed();
   /** what the astronaut is looking at in the world (drives the selection outline) */
   focus: Pick | null = null;
   focusSelUntil = 0;
@@ -142,7 +148,10 @@ export class Hud {
     this.map = new TacticalMap(data, sim);
     this.buildLayerChips();
     this.buildCompass();
-    $('brief-datasource').textContent = `DATA: ${data.label}`;
+    const ds = $('brief-datasource');
+    ds.innerHTML = data.source === 'nasa' ? `<span class="ms">public</span>Real NASA data · ${esc(data.label)}` : `<span class="ms">science_off</span>${esc(data.label)}`;
+    ds.classList.toggle('synthetic', data.source !== 'nasa');
+    $('brief-credits').textContent = data.credits?.join(' · ') ?? '';
     sim.on('toast', (m: string) => this.notify(m));
     sim.on('change', () => this.refreshStatic());
     sim.on('planner', () => this.refreshPlanner());
@@ -153,7 +162,7 @@ export class Hud {
 
   // ------------------------------------------------------------ layers
   private buildLayerChips() {
-    const ids: LayerId[] = ['radiation', 'slope', 'poi', 'dust', 'mag', 'fog'];
+    const ids: LayerId[] = this.data.traverse ? ['radiation', 'slope', 'poi', 'dust', 'mag', 'rover', 'fog'] : ['radiation', 'slope', 'poi', 'dust', 'mag', 'fog'];
     const c = $('mx-layers');
     c.innerHTML = '';
     for (const id of ids) {
@@ -529,7 +538,7 @@ export class Hud {
     const rows = d.rows.map(([k, v, c]) => `<div><span>${esc(k)}</span><b class="${c ?? ''}">${v}</b></div>`).join('');
     return `<div class="i-card i-detail"><div class="i-head"><span class="ms">${d.icon}</span><span class="i-title">${esc(d.title)}</span><b class="i-big ${d.band ? bandCls(d.band) : ''}">${d.big}</b></div>${
       d.bar !== undefined ? `<div class="i-bar ${d.band ? bandCls(d.band) : ''}"><i style="width:${(Math.max(0, Math.min(1, d.bar)) * 100).toFixed(0)}%"></i></div>` : ''
-    }${d.img ? `<img class="i-photo" src="${d.img}" alt="" />` : ''}${rows ? `<div class="i-rows ${d.oneCol ? 'one' : ''}">${rows}</div>` : ''}${
+    }${d.img ? `<img class="i-photo" src="${d.img}" alt="" />` : ''}${d.gallery?.length ? `<div class="i-gallery">${d.gallery.map((g) => `<figure><img src="${esc(g.src)}" alt="" loading="lazy" referrerpolicy="no-referrer" /><figcaption>${esc(g.caption)}</figcaption></figure>`).join('')}</div>` : ''}${rows ? `<div class="i-rows ${d.oneCol ? 'one' : ''}">${rows}</div>` : ''}${
       d.acts ? `<div class="i-acts ${d.cols === 2 ? 'two' : d.cols === 4 ? 'four' : ''}">${d.acts.map((a) => `<button class="i-act ${a.danger ? 'danger' : ''} ${a.on ? 'on' : ''}" data-gaze="${a.id}" data-gaze-label="${esc(a.label)}" ${a.color ? `style="--c:${a.color}"` : ''}><span class="ms">${a.icon}</span>${esc(a.label)}${a.sub ? `<small>${esc(a.sub)}</small>` : ''}</button>`).join('')}</div>` : ''
     }${d.chart ? '<canvas class="i-chart"></canvas>' : ''}${d.hint ? `<div class="i-hint">${esc(d.hint)}</div>` : ''}</div>`;
   }
@@ -622,7 +631,26 @@ export class Hud {
       if (id === 'tags') return { ...g.tagsCard(), oneCol: true, hint: 'Look at something and say “label this”. “Go to tag” navigates. “Remove tag” deletes the newest.' };
       if (id === 'log') return { ...g.logCard(), oneCol: true, hint: 'Say “show log” for the full timeline with the conversation.' };
       if (id === 'emergency') return { icon: 'emergency_home', title: 'Emergency', big: '', rows: [], acts: EMERGENCY_ACTS(g, s), speech: 'Emergency actions. Say call for help, back to habitat, nearest shelter, resupply, rest, or stability on.', hint: 'Say the action, or look at it and say “launch this”.' };
-      if (id === 'tools') return { icon: 'apps', title: 'Tools', big: '', rows: [], acts: TOOL_ACTS, cols: 4, speech: 'Tools: team, supplies, systems, weather, tags, log, photo, and what is this.', hint: 'Say a tool’s name, or look at it and say “launch this”.' };
+      if (id === 'tools') return { icon: 'apps', title: 'Tools', big: '', rows: [], acts: TOOL_ACTS, cols: 4, speech: 'Tools: team, supplies, systems, weather, tags, log, photo, what is this, and the Perseverance rover feed.', hint: 'Say a tool’s name, or look at it and say “launch this”.' };
+      if (id === 'rover') {
+        const f = this.feed;
+        f.loadLatest();
+        const imgs = f.latest ?? [];
+        const sol = imgs[0]?.sol;
+        return {
+          icon: 'satellite_alt',
+          title: 'Perseverance · raw images',
+          big: sol ? `Sol ${sol}` : f.latestError ? 'Offline' : '…',
+          rows: [
+            ['Source', 'NASA/JPL-Caltech raw image feed'],
+            ['Newest', imgs[0] ? `${imgs[0].date} · ${cameraName(imgs[0].camera)}` : f.latestError ? 'Feed unreachable' : 'Loading…', f.latestError ? 'caution' : 'ok'],
+          ],
+          oneCol: true,
+          gallery: imgs.map((i) => ({ src: i.thumb, caption: `Sol ${i.sol} · ${cameraName(i.camera)}`, href: i.link })),
+          speech: sol ? `Latest images from NASA's Perseverance rover, sol ${sol}.` : 'Fetching the latest images from NASA’s Perseverance rover.',
+          hint: 'Live from mars.nasa.gov. Look at ground Perseverance drove over and say “what is this” to see what it saw there.',
+        };
+      }
       if (id === 'systems') {
         const agg = s.agg();
         const relay = s.drone.active && s.drone.mode === 'relay';
@@ -744,7 +772,7 @@ export class Hud {
           icon: 'layers',
           title: 'Map layers',
           big: `${this.activeLayers().length} on`,
-          rows: (['radiation', 'slope', 'poi', 'dust', 'mag'] as LayerId[]).map((l) => [LAYER_INFO[l].label, this.map.layers[l] ? 'On' : 'Off', this.map.layers[l] ? 'ok' : ''] as [string, string, string]),
+          rows: ((this.data.traverse ? ['radiation', 'slope', 'poi', 'dust', 'mag', 'rover'] : ['radiation', 'slope', 'poi', 'dust', 'mag']) as LayerId[]).map((l) => [LAYER_INFO[l].label, this.map.layers[l] ? 'On' : 'Off', this.map.layers[l] ? 'ok' : ''] as [string, string, string]),
           speech: this.activeLayers().length ? `Layers on: ${this.activeLayers().join(', ')}.` : 'No overlay layers on. Say show radiation, or show slope.',
         };
       case 'mission': {
