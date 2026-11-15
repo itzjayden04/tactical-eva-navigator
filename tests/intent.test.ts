@@ -49,10 +49,10 @@ it('yes/no answers and phonetic codes', () => {
   expect(phonetic('drone')).toBe(phonetic('drawn'));
 });
 
-it('voice lock and voice check commands', async () => {
+it('voice check and accent commands', async () => {
   const { parseCommand } = await import('../src/ui/voice');
-  expect(parseCommand('voice lock off')).toEqual({ type: 'voiceLock', on: false });
-  expect(parseCommand('turn on voice lock')).toEqual({ type: 'voiceLock', on: true });
+  expect(parseCommand('forget my accent')).toEqual({ type: 'forgetAccent' });
+  expect(parseCommand('train my accent')).toEqual({ type: 'calibrate', what: 'voice' });
   expect(parseCommand('voice check')).toEqual({ type: 'calibrate', what: 'voice' });
 });
 

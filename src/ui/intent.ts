@@ -526,7 +526,7 @@ export function classify(text: string, aliases: string[] = []): Understood | nul
 }
 
 /** Human label for a command produced by the strict grammar. */
-function grammarLabel(c: Command): string {
+export function grammarLabel(c: Command): string {
   switch (c.type) {
     case 'layer':
       return `${c.on === false ? 'Hide' : c.on ? 'Show' : 'Toggle'} ${c.layer} layer`;
