@@ -1,3 +1,4 @@
+import { frameShape } from './voiceprint';
 /**
  * VOICE: hands-free commands from the astronaut's real microphone.
  *
@@ -50,7 +51,8 @@ export type Command =
   | { type: 'repeat' }
   | { type: 'undo' }
   | { type: 'jump' }
-  | { type: 'where' };
+  | { type: 'where' }
+  | { type: 'voiceLock'; on?: boolean };
 
 const LAYER_WORDS: [RegExp, LayerWord][] = [
   [/\b(radiation|dose map|rad)\b/, 'radiation'],
@@ -195,6 +197,7 @@ export function parseCommand(text: string, aliases: string[] = []): Command | nu
   if (has(/\bzoom in\b|\bmagnify\b|\benhance\b/)) return { type: 'zoom', dir: 'in' };
   if (has(/\bzoom out\b/)) return { type: 'zoom', dir: 'out' };
   if (has(/\b(reset|normal) zoom\b|\bzoom (reset|normal)\b/)) return { type: 'zoom', dir: 'reset' };
+  if (has(/\bvoice ?(lock|match|matching|id|print|verification)\b/)) return { type: 'voiceLock', on: has(/\b(off|disable|stop|remove)\b/) ? false : has(/\b(on|enable|start)\b/) ? true : undefined };
   if (has(/\b(voice|mic|microphone) (check|calibration|test)\b|\b(calibrate|recalibrate|check|test) (my |the )?(voice|mic|microphone)\b/)) return { type: 'calibrate', what: 'voice' };
   if (has(/\b(calibrate|recalibrate)\b/)) return { type: 'calibrate' };
 
@@ -278,6 +281,11 @@ export class Voice {
         const r = e.results[i];
         const text = String(r[0]?.transcript ?? '').trim();
         if (!text) continue;
+        // TEVAN's own voice leaking back into the mic is never a command
+        if (this.isEcho(text, !!r.isFinal)) {
+          if (r.isFinal) console.info('[TEVAN voice] ignored own voice:', text);
+          continue;
+        }
         this.onHeard(text, !!r.isFinal);
         if (r.isFinal) {
           this.level = 0;
@@ -315,7 +323,7 @@ export class Voice {
     };
     rec.onend = () => {
       // Chrome ends continuous sessions after silence/timeouts: keep the mic hot.
-      if (this.want) {
+      if (this.want && !this.deaf) {
         clearTimeout(this.restartTimer);
         this.restartTimer = window.setTimeout(() => this.startRec(), 250);
       } else if (this.state !== 'denied') this.set('off');
@@ -363,16 +371,80 @@ export class Voice {
     return performance.now() < this.speakingUntil;
   }
 
-  /** Speak a reply; the recognizer ignores what it hears while this plays. */
+  // ---------------------------------------------------------------- self-hearing guard
+  // 1. While TEVAN talks the recogniser is stopped (abort drops anything it had buffered), and it
+  //    restarts only after the speech has ended plus a short tail for room echo.
+  // 2. Every result is also ignored while TEVAN is talking or a sound cue is playing.
+  // 3. Echo filter: a transcript finalised just after TEVAN spoke that is mostly TEVAN's own
+  //    words is dropped (catches late results from the speakers).
+  private deaf = false;
+  private resumeTimer = 0;
+  private utterSeq = 0;
+  private spoken: { words: Set<string>; endAt: number }[] = [];
+  /** how long after TEVAN stops talking the mic stays closed (room echo, speaker latency) */
+  static TAIL_MS = 600;
+  /** results finalised within this time after TEVAN's speech are checked against what it said */
+  static ECHO_MS = 2500;
+
+  private deafen(maxMs: number) {
+    this.deaf = true;
+    this.speakingUntil = Math.max(this.speakingUntil, performance.now() + maxMs);
+    clearTimeout(this.resumeTimer);
+    clearTimeout(this.restartTimer);
+    this.resumeTimer = window.setTimeout(() => this.undeafen(Voice.TAIL_MS), maxMs);
+    try {
+      this.rec?.abort();
+    } catch {
+      /* not running */
+    }
+  }
+  private undeafen(tail: number) {
+    clearTimeout(this.resumeTimer);
+    const last = this.spoken[this.spoken.length - 1];
+    if (last) last.endAt = performance.now();
+    this.speakingUntil = performance.now() + tail;
+    this.resumeTimer = window.setTimeout(() => {
+      this.deaf = false;
+      if (this.want) this.startRec();
+    }, tail);
+  }
+  /** Ignore whatever the mic hears for `ms` (sound cues). Does not stop the recogniser. */
+  ignoreFor(ms: number) {
+    this.speakingUntil = Math.max(this.speakingUntil, performance.now() + ms);
+  }
+  /** Is this transcript TEVAN hearing itself? */
+  isEcho(text: string, final: boolean, now = performance.now()): boolean {
+    const words = normalise(text).split(' ').filter((w) => w.length > 1);
+    if (!words.length) return false;
+    this.spoken = this.spoken.filter((s) => s.endAt === Infinity || now - s.endAt < 30000);
+    for (const s of this.spoken) {
+      // a person repeating a suggested command does so seconds later; an echo arrives right away
+      if (s.endAt !== Infinity && now - s.endAt > Voice.ECHO_MS) continue;
+      const hit = words.filter((w) => s.words.has(w)).length;
+      if (words.length >= 2 ? hit / words.length >= 0.6 : hit === 1 && words[0].length > 3 && final) return true;
+    }
+    return false;
+  }
+
+  /** Speak a reply. The recogniser is paused while it plays, so TEVAN never hears itself. */
   speak(text: string) {
     if (!('speechSynthesis' in window)) return;
+    const id = ++this.utterSeq;
+    // cancelling the previous line fires ITS onend: the id check stops that from reopening the mic
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.07;
     u.pitch = this.replyPitch;
     this.lastSpoken = text;
-    this.speakingUntil = performance.now() + Math.min(9000, 400 + text.length * 65);
-    u.onend = () => (this.speakingUntil = performance.now() + 350);
+    this.spoken.push({ words: new Set(normalise(text).split(' ').filter((w) => w.length > 1)), endAt: Infinity });
+    if (this.spoken.length > 6) this.spoken.shift();
+    // fallback if the browser never reports the end of speech
+    this.deafen(Math.min(25000, 1500 + text.length * 95));
+    const done = () => {
+      if (id === this.utterSeq) this.undeafen(Voice.TAIL_MS);
+    };
+    u.onend = done;
+    u.onerror = done;
     speechSynthesis.speak(u);
   }
 }
@@ -385,6 +457,7 @@ export class MicMeter {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private buf = new Float32Array(2048);
+  private fbuf = new Float32Array(1024);
   private stream: MediaStream | null = null;
   /** current level in dBFS (about -90 silence .. 0 clipping) */
   db = -90;
@@ -423,6 +496,12 @@ export class MicMeter {
     const l = Math.max(0, Math.min(1, (this.db - this.noiseDb - 4) / 30));
     this.level += (l - this.level) * 0.35;
     return this.db;
+  }
+  /** Spectral shape of the current frame for the voiceprint (mel bands, loudness removed). */
+  shape(): Float32Array | null {
+    if (!this.ctx || !this.analyser) return null;
+    this.analyser.getFloatFrequencyData(this.fbuf);
+    return frameShape(this.fbuf, this.ctx.sampleRate);
   }
   /** Fundamental frequency of the current frame (autocorrelation), or null when unvoiced. */
   pitch(): number | null {

@@ -165,9 +165,12 @@ export class Audio {
     if (rate !== undefined && l.rate) l.rate.setTargetAtTime(rate, this.ctx.currentTime, 0.5);
   }
 
+  /** called for every one-shot sound (the voice recogniser ignores the mic briefly) */
+  onPlay: (slot: Slot) => void = () => {};
   play(slot: Slot) {
     const ctx = this.ctx;
     if (!ctx || this.muted) return;
+    this.onPlay(slot);
     const file = this.buffers.get(slot);
     if (file) {
       const s = ctx.createBufferSource();
