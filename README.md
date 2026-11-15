@@ -27,7 +27,7 @@ There are no modes. There's no training mode, VR mode or AR mode, only the astro
 
 The camera and microphone icons at the top turn **green** while they are working and stay **dim grey** when they are not. Hover them for the reason.
 
-No camera, or you'd rather skip calibration? Click **"Begin without gaze"**, and the mouse pointer then stands in for your eyes. Every calibration screen has a **Skip** button. Say **"voice check"** during the EVA to repeat the voice check, and **"calibrate"** to redo the gaze calibration.
+No camera or microphone, or you'd rather skip calibration? Click **"Begin without gaze and mic"**: the mouse pointer stands in for your eyes, and you press **Enter** to type commands instead of speaking (type "voice check" to turn the mic on later). Every calibration screen has a **Skip** button. Say **"voice check"** during the EVA to repeat the voice check, and **"calibrate"** to redo the gaze calibration.
 
 ### Tips for good gaze tracking
 

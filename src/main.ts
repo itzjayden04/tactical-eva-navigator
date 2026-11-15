@@ -438,11 +438,12 @@ async function boot() {
   };
 
   // ---------------------------------------------------------------- egress
-  const begin = async (withGaze: boolean) => {
+  /** withMic = false: no microphone at all (typed commands and clicks only); say/type “voice check” later to turn it on */
+  const begin = async (withGaze: boolean, withMic = true) => {
     $('btn-begin').setAttribute('disabled', '');
     $('btn-skip-calib').setAttribute('disabled', '');
     // start mic + camera inside the click (user gesture) so the permission prompts appear right away
-    voice.start();
+    if (withMic) voice.start();
     const gazeReady = withGaze ? gaze.start() : Promise.resolve();
     await audio.init();
     audio.play('ui_click');
@@ -452,13 +453,17 @@ async function boot() {
       if (!FAST) await runCalibration();
     }
     $('briefing').classList.add('hidden');
-    if (!FAST) await runVoiceCheck();
-    else void meter.start();
+    if (withMic) {
+      if (!FAST) await runVoiceCheck();
+      else void meter.start();
+    }
     $('hud').classList.remove('hidden');
     sim.start(false);
     hud.refreshStatic();
     const hint = $('hint-line');
-    hint.innerHTML = voice.supported
+    hint.innerHTML = !withMic
+      ? 'Mic off: press <b>Enter</b> to type commands (try <b>“voice check”</b> to turn the mic on) · click a feature to launch it · <b>Space</b> jumps'
+      : voice.supported
       ? 'Say <b>“what can I say”</b> · look at anything and say <b>“what is this”</b> or <b>“label this”</b> · <b>Space</b> jumps'
       : 'Voice needs Chrome or Edge here. Press <b>Enter</b> to type commands · click a feature to launch it · <b>Space</b> jumps';
     hint.classList.add('show');
@@ -466,7 +471,7 @@ async function boot() {
     hud.notify('Egress complete. Follow the ground arrows. W A S D to walk, Space to jump, drag to look.', 'directions_walk', 7);
   };
   $('btn-begin').onclick = () => begin(true);
-  $('btn-skip-calib').onclick = () => begin(false);
+  $('btn-skip-calib').onclick = () => begin(false, false);
 
   // ---------------------------------------------------------------- sim events → audio
   sim.on('incident', (def: any) => audio.play(def.severity === 'emergency' ? 'alert_emergency' : def.severity === 'warning' ? 'alert_warning' : 'alert_caution'));
@@ -842,6 +847,7 @@ async function boot() {
       }
       case 'calibrate':
         if (cmd.what === 'voice') {
+          if (voice.state === 'off') voice.start();
           void runVoiceCheck();
           r = { text: 'Voice check' };
           break;
@@ -868,6 +874,7 @@ async function boot() {
         r = { text: 'Mic asleep. Say “resume listening”.' };
         break;
       case 'wake':
+        if (voice.state === 'off') voice.start();
         voice.sleep(false);
         r = { text: 'Listening' };
         break;
