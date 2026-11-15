@@ -12,6 +12,7 @@ import { Guardian, TAG_INFO, bearingWord, type Pick, type TagKind } from './core
 import { GazeTracker } from './ui/gaze';
 import { HoloLabels, identifiable } from './ui/holo';
 import { MapNav } from './ui/mapnav';
+import { enrol, verify, type VoiceFrame, type VoicePrint } from './ui/voiceprint';
 import { understand, yesNo, RUN_AT, type Understood } from './ui/intent';
 import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
@@ -122,7 +123,45 @@ async function boot() {
     voice.speak(text);
   };
   sim.on('say', (m: { text: string; who: string }) => voice.speak(m.text));
+  // alarms and chimes are not speech: don't let the recogniser turn them into words
+  audio.onPlay = (slot) => voice.ignoreFor(slot.startsWith('alert') ? 1400 : 700);
   // ---------------------------------------------------------------- understanding speech (grammar first, then intent)
+  // ---------------------------------------------------------------- voice match (only the enrolled astronaut's voice)
+  /** voiced mic frames of the last few seconds (never frames captured while TEVAN talks) */
+  const vframes: VoiceFrame[] = [];
+  let vprint: VoicePrint | null = null;
+  let voiceLock = true;
+  let voiceRejects = 0;
+  let lastPitchAt = 0;
+  const captureVoice = (now: number) => {
+    if (!meter.ready) return;
+    meter.sample();
+    while (vframes.length && now - vframes[0].t > 6000) vframes.shift();
+    if (voice.isSpeaking() || meter.db < meter.noiseDb + 10) return;
+    const shape = meter.shape();
+    if (!shape) return;
+    let pitch: number | null = null;
+    if (now - lastPitchAt > 45) {
+      lastPitchAt = now;
+      pitch = meter.pitch();
+    }
+    vframes.push({ t: now, shape, pitch });
+  };
+  /** true when this spoken command may run (sounds like the enrolled voice, or nothing to compare) */
+  const voiceAllowed = (t: string): boolean => {
+    if (!voiceLock || !vprint) return true;
+    const now = performance.now();
+    const m = verify(vprint, vframes.filter((f) => now - f.t < 4000));
+    console.info(`[TEVAN voice match] "${t}" ${m.accept ? 'accepted' : 'REJECTED'} · timbre ${m.timbre.toFixed(2)} · pitch ${m.semitones === null ? 'n/a' : m.semitones.toFixed(1) + ' st'} · ${m.frames} frames · ${m.reason}`);
+    if (m.accept) {
+      voiceRejects = 0;
+      return true;
+    }
+    voiceRejects++;
+    setCapsule('miss', voiceRejects >= 3 ? `Ignored, ${m.reason}. Not you? Type “voice check” to re-enrol, or “voice lock off”` : `Ignored “${t}”: ${m.reason}`, voiceRejects >= 3 ? 7000 : 2600);
+    if (sim.status === 'active') sim.addLog({ kind: 'info', title: 'Voice command ignored', severity: 'info', outcome: `“${t}”: ${m.reason}` });
+    return false;
+  };
   /** a "Did you mean …?" question waiting for yes / no */
   let pendingIntent: { u: Understood; until: number } | null = null;
   const runUnderstood = (u: Understood, source: 'voice' | 'typed') => {
@@ -137,6 +176,8 @@ async function boot() {
   };
   const handleUtterance = (alts: string[], source: 'voice' | 'typed') => {
     const t = alts[0] ?? '';
+    // typed commands are always trusted; spoken ones must sound like the enrolled astronaut
+    if (source === 'voice' && !voiceAllowed(t)) return;
     if (pendingIntent && performance.now() < pendingIntent.until) {
       const yn = yesNo(t);
       if (yn) {
@@ -389,6 +430,7 @@ async function boot() {
     };
     const speech: number[] = [];
     const pitches: number[] = [];
+    const enrolFrames: VoiceFrame[] = [];
     let lastLoud = 0;
     t0 = performance.now();
     while (performance.now() - t0 < 9000 && !skipCalib) {
@@ -397,6 +439,8 @@ async function boot() {
         speech.push(meter.db);
         const p = meter.pitch();
         if (p) pitches.push(p);
+        const shape = meter.shape();
+        if (shape) enrolFrames.push({ t: now, shape, pitch: p });
         lastLoud = now;
       }
       if (finalAt && now - finalAt > 450) break;
@@ -415,16 +459,19 @@ async function boot() {
       learned = name;
     }
     if (pitch) voice.replyPitch = pitch < 165 ? 1.2 : 0.8;
+    const vp = enrol(enrolFrames);
+    if (vp) vprint = vp;
     const lines: string[] = [];
     if (heard) lines.push(`Heard “${heard}”.${learned ? ` TEVAN will also answer to “${learned}” for your voice.` : ''}`);
     else if (!voice.supported) lines.push('This browser has no speech recognition. Use Chrome or Edge, or press Enter to type commands.');
     else lines.push(VOICE_ERRORS[voice.lastError] ?? 'No words came back from the recogniser. The bubble beside the top pill shows what TEVAN hears during the EVA.');
     if (snr !== null) lines.push(`Your voice is ${snr.toFixed(0)} dB above the room noise: ${snr >= 20 ? 'clear' : snr >= 12 ? 'usable, speak up a little' : 'weak, move closer or use a headset'}.`);
     else if (!ok) lines.push('Could not read the microphone level.');
+    if (vp) lines.push('Voiceprint saved: spoken commands are now only taken in your voice (typed commands always work).');
     if (pitch) lines.push(`Pitch about ${pitch.toFixed(0)} Hz, so TEVAN replies in a ${pitch < 165 ? 'higher' : 'lower'} voice that is easy to tell apart from yours.`);
     $('calib-title').textContent = heard ? 'Voice check complete' : speechDb !== null ? 'Voice level measured' : 'No voice detected';
     txt.textContent = lines.join(' ');
-    const profile = { heard, learnedAlias: learned, noiseDb: Math.round(meter.noiseDb), speechDb: speechDb === null ? null : Math.round(speechDb), pitchHz: pitch ? Math.round(pitch) : null };
+    const profile = { heard, learnedAlias: learned, noiseDb: Math.round(meter.noiseDb), speechDb: speechDb === null ? null : Math.round(speechDb), pitchHz: pitch ? Math.round(pitch) : null, voiceprintFrames: vp?.frames ?? 0 };
     sim.extra.voiceCheck = profile;
     console.info('[TEVAN voice check]', profile);
     if (heard) voice.speak('Hi. I hear you. Voice check complete.');
@@ -621,6 +668,7 @@ async function boot() {
         big: '',
         rows: [
           ['Speak naturally', 'TEVAN understands meaning, not exact words, and asks “did you mean…?” when unsure'],
+          ['Voice lock', 'only your enrolled voice runs spoken commands · type “voice lock off” to disable'],
           ['Just look at a rock', 'its ID card appears and stays 3.5 s'],
           ['Look + “what is this”', 'TEVAN identifies it'],
           ['Look + “label this (as hazard)”', 'coloured tag, follows movers'],
@@ -926,6 +974,11 @@ async function boot() {
       case 'jump':
         r = { text: sim.jump() ? 'Jump' : 'Can’t jump right now' };
         break;
+      case 'voiceLock':
+        voiceLock = cmd.on ?? !voiceLock;
+        voiceRejects = 0;
+        r = say(!vprint ? 'No voiceprint yet. Say or type voice check to record one.' : voiceLock ? 'Voice lock on. I only take spoken commands in your voice.' : 'Voice lock off. I take spoken commands from any voice.');
+        break;
       case 'where': {
         const p = sim.position();
         const hab = sim.world.nodes.get(m.startNodeId)!;
@@ -1184,6 +1237,7 @@ async function boot() {
     audio.setLevel('quake_rumble', world.quake * 0.6);
     world.update(dt);
     world.render($('drone-pip'));
+    if (!voiceCheck) captureVoice(now);
     if (sim.status === 'active') {
       hud.update(dt);
       // gaze → target (pointer stands in when no camera)
