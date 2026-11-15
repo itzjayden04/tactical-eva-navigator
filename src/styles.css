@@ -163,6 +163,7 @@ canvas.i-chart { width: 100%; height: 120px; display: block; }
 #voice-capsule .vc-cam[data-state='err'] { color: rgba(243, 248, 251, 0.32); }
 #voice-capsule .vc-mic[data-state='on'] { color: var(--ok); }
 #voice-capsule .vc-mic[data-state='hearing'] { color: var(--accent); }
+#voice-capsule .vc-mic[data-state='paused'] { color: var(--caution); opacity: 0.7; }
 #voice-capsule .vc-mic .ms { font-size: 17px; margin-left: -1px; }
 #voice-transcript { font-size: 12.5px; opacity: 0; transition: opacity 0.3s; }
 .vc-wave { display: none; gap: 2px; align-items: center; height: 14px; margin-left: 4px; }

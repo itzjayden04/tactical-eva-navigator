@@ -166,7 +166,8 @@ const LEX: Record<string, string[]> = {
   MARK: ['mark', 'record', 'note', 'save', 'log it', 'register'],
   VITALS: ['vitals', 'vital', 'vital signs', 'health', 'heart rate', 'heart', 'pulse', 'suit status', 'body', 'condition', 'biometrics', 'bpm', 'healthy', 'feeling', 'temperature', 'consumables'],
   HOWAMI: ['how am i', 'am i ok', 'am i okay', 'am i alright', 'how am i doing', 'am i fine'],
-  MAYDAY: ['mayday', 'sos', 'help me', 'emergency', 'in trouble', 'i need help', 'send help', 'save me', 'rescue', 'distress', 'injured', 'hurt'],
+  MAYDAY: ['mayday', 'help me', 'in trouble', 'i need help', 'send help', 'save me', 'rescue', 'distress', 'injured', 'hurt'],
+  EMERG: ['emergency', 'emergencies', 'emergency panel', 'emergency menu', 'emergency options', 'quick actions', 'sos', 'panic button'],
   HOME: ['habitat', 'hab', 'home', 'base', 'station', 'airlock', 'lander'],
   GO: ['go', 'take me', 'navigate', 'head', 'guide', 'bring me', 'walk', 'lead', 'get me', 'return', 'direct me', 'back to', 'go back', 'move'],
   SHELTER: ['shelter', 'cover', 'safe place', 'bunker', 'hide from', 'protection', 'shield', 'safe spot'],
@@ -400,7 +401,8 @@ const INTENTS: IntentDef[] = [
   { id: 'mapOpen', need: ['MAP'], label: () => 'Open the map', ex: ['open map', 'show me the map', 'map please', 'bring up the navigator', 'let me see the map', 'open maps', 'show the chart'], build: (a) => (has(a, 'HIDE') ? { type: 'map', open: false } : { type: 'map', open: true }) },
   { id: 'layersPanel', need: ['LAYER'], label: () => 'Open map layers', ex: ['layers', 'show layers', 'open the layers', 'map layers', 'overlays'], build: () => ({ type: 'launch', feature: 'layers' }) },
   { id: 'routePanel', need: ['ROUTE'], label: () => 'Show the route', ex: ['show route', 'my route', 'route status', 'how far is my route', 'navigation', 'show me the way', 'directions'], build: (a) => (has(a, 'CHECK') ? { type: 'progress', feature: 'route' } : { type: 'launch', feature: 'route' }) },
-  { id: 'mayday', need: ['MAYDAY'], label: () => 'Call for help (mayday)', ex: ['mayday', 'i need help', 'help me', 'emergency', 'send help now', 'i am in trouble', 'call for rescue', 'i am injured'], build: () => ({ type: 'emergency', action: 'help' }) },
+  { id: 'mayday', need: ['MAYDAY'], label: () => 'Call for help (mayday)', ex: ['mayday', 'i need help', 'help me', 'send help now', 'i am in trouble', 'call for rescue', 'i am injured'], build: () => ({ type: 'emergency', action: 'help' }) },
+  { id: 'emergencyPanel', need: ['EMERG'], label: () => 'Open the Emergency panel', ex: ['open emergency', 'emergency panel', 'show emergency options', 'quick actions', 'emergency menu', 'this is an emergency'], build: () => ({ type: 'tool', tool: 'emergency' }) },
   { id: 'home', need: ['HOME'], label: () => 'Navigate back to the habitat', ex: ['back to habitat', 'take me home', 'go back to base', 'return to the hab', 'head home', 'navigate to habitat', 'guide me to the base'], build: () => ({ type: 'emergency', action: 'habitat' }) },
   { id: 'shelter', need: ['SHELTER'], label: () => 'Navigate to the nearest shelter', ex: ['find shelter', 'take cover', 'nearest shelter', 'go to shelter', 'i need cover', 'get me to a safe place'], build: () => ({ type: 'emergency', action: 'shelter' }) },
   { id: 'cache', need: ['CACHE'], label: () => 'Navigate to the nearest supply cache', ex: ['go to cache', 'nearest supply cache', 'i need supplies', 'resupply', 'refill my oxygen at the depot', 'take me to the supplies', 'top up'], build: (a) => (has(a, 'GO') ? { type: 'emergency', action: 'cache' } : { type: 'emergency', action: 'resupply' }) },
@@ -516,6 +518,8 @@ export function classify(text: string, aliases: string[] = []): Understood | nul
     let conf = Math.max(0, Math.min(1, top.s - (margin < 0.06 ? 0.12 : 0)));
     // mostly unrelated words and no request verb: probably talk, not a command, so ask first
     if (a.unknown.length >= 2 && !ACTION.some((c) => a.bag.has(c))) conf = Math.min(conf, RUN_AT - 0.05);
+    // a mayday alerts the habitat: only exact phrases send it straight away, a guessed one is confirmed first
+    if (top.it.id === 'mayday') conf = Math.min(conf, RUN_AT - 0.05);
     return { cmd, confidence: conf, via: 'intent', label: top.it.label(a), intent: top.it.id, heard: text, fixes: a.fixes, runnerUp: second && margin < 0.1 ? { label: second.it.label(a), confidence: second.s } : undefined };
   }
   return null;
