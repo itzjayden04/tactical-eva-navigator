@@ -240,7 +240,7 @@ export class Voice {
   private speakingUntil = 0;
   private restartTimer = 0;
   /** final transcript (already filtered while TEVAN speaks) */
-  onFinal: (text: string) => void = () => {};
+  onFinal: (text: string, alternatives: string[]) => void = () => {};
   /** every transcript the recogniser produces (used by the voice check) */
   onHeard: (text: string, final: boolean) => void = () => {};
   /** extra spellings of "TEVAN" learned from this user's voice check */
@@ -270,7 +270,8 @@ export class Voice {
     rec.lang = 'en-US';
     rec.continuous = true;
     rec.interimResults = true;
-    rec.maxAlternatives = 1;
+    // several guesses per phrase: the intent model picks the one that makes sense (helps accents)
+    rec.maxAlternatives = 4;
     rec.onresult = (e: any) => {
       if (this.isSpeaking()) return;
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -281,7 +282,9 @@ export class Voice {
         if (r.isFinal) {
           this.level = 0;
           this.set(this.asleep ? 'asleep' : 'listening');
-          this.onFinal(text);
+          const alts: string[] = [];
+          for (let k = 0; k < r.length; k++) alts.push(String(r[k]?.transcript ?? '').trim());
+          this.onFinal(text, alts.filter(Boolean));
         } else {
           this.level = 1;
           if (!this.asleep) this.set('hearing');

@@ -11,7 +11,7 @@ import type { DataBundle } from '../data/types';
 import { Sim, PACE_V } from '../core/sim';
 import { bandCore, bandDose, bandFatigue, bandFrac, bandHr, Band, RESERVE_FRAC, FATIGUE_REROUTE } from '../core/health';
 import { walkSpeed } from '../core/route';
-import { LAYER_INFO, LayerId, TacticalMap } from './map';
+import { LAYER_INFO, LayerId, TacticalMap, type MapView } from './map';
 import { RoverFeed, cameraName } from '../data/roverFeed';
 import { drawChart } from './chart';
 import type { World } from '../render/scene';
@@ -125,6 +125,8 @@ export const TAG_ACTS: Act[] = TAG_KINDS.map((k) => ({ id: `tagkind:${k}`, label
 export class Hud {
   map: TacticalMap;
   mapExpanded = false;
+  /** street-map style camera for the Navigator map (set by the app) */
+  mapNav: { tick(dt: number): MapView } | null = null;
   planning = false;
   private t = 0;
   private acc = 0;
@@ -244,7 +246,7 @@ export class Hud {
     this.updateChevrons();
     this.updateFocus();
     this.map.drawRadar($('map-canvas') as HTMLCanvasElement, { t: this.t, rangeM: 650 });
-    if (this.mapExpanded) this.map.draw($('map-canvas-large') as HTMLCanvasElement, { planner: this.sim.plannerRoute(), large: true, t: this.t });
+    if (this.mapExpanded) this.map.draw($('map-canvas-large') as HTMLCanvasElement, { planner: this.sim.plannerRoute(), large: true, t: this.t, view: this.mapNav?.tick(dt) });
     this.acc += dt;
     if (this.acc < 0.1) return;
     this.acc = 0;

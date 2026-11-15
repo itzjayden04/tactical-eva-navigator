@@ -82,6 +82,14 @@ Choose either option.
 - **Connect the repo:** on app.netlify.com choose *Add new site → Import from Git → tactical-eva-navigator*. The settings come from `netlify.toml` (build `npm run build`, publish `dist`).
 - **Drag and drop:** run `npm run build` locally, then drag the `dist/` folder onto https://app.netlify.com/drop.
 
+## What's new in v4: mixed-reality labels, intent voice, street-map Navigator
+
+**Look-to-identify ID cards (mixed reality).** The moment your eyes land on a boulder, a site, your crewmate, the drone or a tag, an ID card appears beside it, anchored to the object in 3D. Look away, or turn all the way around, and the card stays for **3.5 s** with a countdown ring. While the object is out of view, the card rides on the visor edge on the side the object is, with an arrow and how far to turn ("Turn 146° left · 904 m"). Up to three cards at a time. (`src/ui/holo.ts`)
+
+**Voice that understands meaning, not exact phrases.** The strict grammar still runs first. If it does not match, an in-browser intent model takes over (no API key, no network): a synonym lexicon maps words to concepts, misheard words are rescued by sound (Metaphone-style codes) and spelling (Jaro-Winkler), and an IDF-weighted similarity picks the intent and fills its slots (which layer, which consumable, on/off). Chrome's top 4 recognition guesses are all scored, which helps with accents. Confident guesses run and show "≈ what TEVAN understood"; unsure ones ask "Did you mean …?" and wait for yes or no. Small talk is ignored. Examples that now work: "so radiation", "sure the radiation lair", "how much oxy gen left", "send the drawn out", "we route", "find me a better way", "am I okay", "take pitcher". (`src/ui/intent.ts`)
+
+**Navigator map with street-map interaction.** Scroll, trackpad-pinch or touch-pinch to zoom around the cursor, drag to pan, double-click to zoom, `+`/`−` and arrow keys, buttons for zoom, "centre on me" and "whole area". Zoomed in, the map switches to the full 1 m/px HiRISE orthophoto, and more labels appear (junction names, traverse names, denser Perseverance sol stops) with collision-free placement. Search box (`/`) finds places, your labels, crew, traverses, `sol 120`, or coordinates like `18.445, 77.44`; category chips frame all shelters, caches, science sites, hazards, labels or crew. Click anything (or empty ground to drop a pin) for a place card with coordinates, elevation, slope, dose rate and distance, plus **Navigate**, **Add waypoint**, **Label** (name + colour; shows in the visor too) and, at rover stops, the real Perseverance panorama. "Plan route" mode keeps click-to-add-waypoint. (`src/ui/mapnav.ts`, `src/ui/map.ts`)
+
 ## What's new in v3: real NASA data
 
 TEVAN now walks you across **real Jezero Crater**, not a procedural stand-in.

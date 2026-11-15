@@ -10,6 +10,9 @@ import { Audio } from './ui/audio';
 import { Voice, MicMeter, parseCommand, normalise, WAKE_ALIASES, Command, FeatureId, VOICE_ERRORS } from './ui/voice';
 import { Guardian, TAG_INFO, bearingWord, type Pick, type TagKind } from './core/guardian';
 import { GazeTracker } from './ui/gaze';
+import { HoloLabels, identifiable } from './ui/holo';
+import { MapNav } from './ui/mapnav';
+import { understand, yesNo, RUN_AT, type Understood } from './ui/intent';
 import { Targeting } from './ui/targets';
 import { RESERVE_FRAC } from './core/health';
 
@@ -37,8 +40,9 @@ async function boot() {
   const meter = new MicMeter();
   world.attachGuardian(guardian);
   hud.guardian = guardian;
+  const holo = new HoloLabels($('holo-layer'), world, guardian);
   hud.map.guardian = guardian;
-  (window as any).__tevan = { sim, world, hud, voice, gaze, targets, guardian, meter };
+  (window as any).__tevan = { sim, world, hud, voice, gaze, targets, guardian, meter, get holo() { return holo; } };
 
   // ---------------------------------------------------------------- pre-egress screen
   const m = data.mission;
@@ -118,20 +122,53 @@ async function boot() {
     voice.speak(text);
   };
   sim.on('say', (m: { text: string; who: string }) => voice.speak(m.text));
-  voice.onFinal = (t) => {
-    if (voiceCheck) return; // the "Hi TEVAN" check is listening, not the command parser
-    const cmd = parseCommand(t, voice.aliases);
-    if (voice.asleep && cmd?.type !== 'wake') return;
-    if (!cmd) {
-      setCapsule('miss', t, 1800);
-      return;
-    }
-    if (sim.status === 'active') guardian.record('you', t);
-    const reply = exec(cmd, 'voice');
-    setCapsule('ok', reply.text || t, 2600);
+  // ---------------------------------------------------------------- understanding speech (grammar first, then intent)
+  /** a "Did you mean …?" question waiting for yes / no */
+  let pendingIntent: { u: Understood; until: number } | null = null;
+  const runUnderstood = (u: Understood, source: 'voice' | 'typed') => {
+    if (sim.status === 'active') guardian.record('you', u.heard);
+    const reply = exec(u.cmd, source);
+    // show what TEVAN understood when it went by meaning, so the astronaut can trust (or correct) it
+    setCapsule('ok', u.via === 'intent' ? `≈ ${u.label} · ${reply.text || u.heard}` : reply.text || u.heard, 2800);
+    if (u.via === 'intent') console.info(`[TEVAN intent] "${u.heard}" → ${u.intent} (${Math.round(u.confidence * 100)}%)${u.fixes.length ? ' fixed: ' + u.fixes.join(', ') : ''}`);
     audio.play('voice_ack');
     if (reply.speak) speak(reply.speak);
     else if (reply.text && sim.status === 'active') guardian.record('tevan', reply.text);
+  };
+  const handleUtterance = (alts: string[], source: 'voice' | 'typed') => {
+    const t = alts[0] ?? '';
+    if (pendingIntent && performance.now() < pendingIntent.until) {
+      const yn = yesNo(t);
+      if (yn) {
+        const p = pendingIntent;
+        pendingIntent = null;
+        if (yn === 'yes') runUnderstood(p.u, source);
+        else {
+          setCapsule('miss', 'Cancelled', 1600);
+          if (source === 'voice') voice.speak('Okay.');
+        }
+        return;
+      }
+    }
+    pendingIntent = null;
+    const u = understand(alts, voice.aliases);
+    if (source === 'voice' && voice.asleep && u?.cmd.type !== 'wake') return;
+    if (!u) {
+      setCapsule('miss', source === 'typed' ? `Not understood: ${t}` : t, 1800);
+      return;
+    }
+    if (u.confidence < RUN_AT) {
+      pendingIntent = { u, until: performance.now() + 12000 };
+      const q = u.runnerUp ? `Did you mean “${u.label}” or “${u.runnerUp.label}”?` : `Did you mean “${u.label}”?`;
+      setCapsule('ask', `${q} Say yes or no`, 12000);
+      if (source === 'voice') voice.speak(`Did you mean ${u.label.toLowerCase()}?`);
+      return;
+    }
+    runUnderstood(u, source);
+  };
+  voice.onFinal = (t, alts) => {
+    if (voiceCheck) return; // the "Hi TEVAN" check is listening, not the command parser
+    handleUtterance(alts.length ? alts : [t], 'voice');
   };
 
   // ---------------------------------------------------------------- gaze
@@ -578,6 +615,8 @@ async function boot() {
         title: 'Say…',
         big: '',
         rows: [
+          ['Speak naturally', 'TEVAN understands meaning, not exact words, and asks “did you mean…?” when unsure'],
+          ['Just look at a rock', 'its ID card appears and stays 3.5 s'],
           ['Look + “what is this”', 'TEVAN identifies it'],
           ['Look + “label this (as hazard)”', 'coloured tag, follows movers'],
           ['“Call for help” · “back to habitat”', 'emergency (or the SOS icon)'],
@@ -791,6 +830,12 @@ async function boot() {
         r = say(`Pace ${sim.pace}`);
         break;
       case 'zoom': {
+        if (hud.mapExpanded) {
+          if (cmd.dir === 'reset') mapNav.fitAll();
+          else mapNav.zoomAt(cmd.dir === 'in' ? 2 : 0.5);
+          r = { text: cmd.dir === 'in' ? 'Map zoomed in' : cmd.dir === 'out' ? 'Map zoomed out' : 'Whole map' };
+          break;
+        }
         const z = cmd.dir === 'reset' ? world.setZoom(1) : world.zoomBy(cmd.dir === 'in' ? 2 : 0.5);
         r = { text: `Zoom ${z.toFixed(1)}×` };
         break;
@@ -912,11 +957,7 @@ async function boot() {
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') {
-      const cmd = parseCommand(input.value, voice.aliases);
-      if (cmd && sim.status === 'active') guardian.record('you', input.value);
-      const res = cmd ? exec(cmd, 'typed') : null;
-      if (res?.text && sim.status === 'active') guardian.record('tevan', res.speak ?? res.text);
-      setCapsule(cmd ? 'ok' : 'miss', res ? res.text : `Not understood: ${input.value}`, 2600);
+      handleUtterance([input.value], 'typed');
       input.value = '';
       input.classList.add('hidden');
       input.blur();
@@ -928,20 +969,40 @@ async function boot() {
   });
 
   // ---------------------------------------------------------------- navigator panel
+  const mapNav = new MapNav(hud.map, sim, data, guardian, $('map-canvas-large') as HTMLCanvasElement, {
+    stage: $('mx-stage'),
+    search: $('mx-search') as HTMLInputElement,
+    results: $('mx-results'),
+    card: $('mx-card'),
+    coords: $('mx-coords'),
+    zin: $('mx-zin'),
+    zout: $('mx-zout'),
+    locate: $('mx-locate'),
+    fit: $('mx-fit'),
+    modes: $('mx-modes'),
+    clearSearch: $('mx-search-x'),
+    chips: $('mx-chips'),
+  });
+  hud.mapNav = mapNav;
+  mapNav.onPlan = (e, n) => {
+    const node = sim.plannerAdd(e, n);
+    hud.refreshPlanner();
+    return node ? `${sim.plannerNodes.length}. ${node.name}` : null;
+  };
+  mapNav.onSay = (t) => {
+    setCapsule('ok', t, 2600);
+    if (sim.status === 'active') guardian.record('tevan', t);
+  };
   const openMap = (open: boolean) => {
     hud.mapExpanded = open;
     hud.map.planning = open;
     $('map-expanded').classList.toggle('hidden', !open);
-    if (open) hud.refreshPlanner();
+    if (open) {
+      hud.refreshPlanner();
+      mapNav.opened();
+    }
   };
-  $('map-canvas-large').addEventListener('click', (ev) => {
-    const cv = $('map-canvas-large');
-    const r = cv.getBoundingClientRect();
-    const p = hud.map.fromPx(ev.clientX - r.left, ev.clientY - r.top, r.width, r.height);
-    const node = sim.plannerAdd(p.e, p.n);
-    setCapsule(node ? 'ok' : 'miss', node ? `Waypoint ${sim.plannerNodes.length}: ${node.name}` : 'No traverse node near there', 2000);
-    hud.refreshPlanner();
-  });
+  mapNav.onClose = () => openMap(false);
   $('map-expanded').addEventListener('click', (e) => {
     if (e.target === $('map-expanded')) openMap(false);
   });
@@ -981,7 +1042,7 @@ async function boot() {
 
   // ---------------------------------------------------------------- keyboard: movement only
   const held = new Set<string>();
-  const typing = () => document.activeElement === input;
+  const typing = () => document.activeElement === input || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement;
   window.addEventListener('blur', () => held.clear());
   window.addEventListener('keydown', (e) => {
     if (typing() || sim.status !== 'active') return;
@@ -1122,13 +1183,16 @@ async function boot() {
       const gp = gaze.state === 'tracking' && gaze.point ? gaze.point : pointer;
       targets.update(calibrating ? null : gp, now);
       // world focus: outline what the eyes rest on in the world (only when no visor feature is locked)
-      if (now - lastPickT > 120) {
+      if (now - lastPickT > 70) {
         lastPickT = now;
         const p = !calibrating && gp && !targets.current && !hud.mapExpanded ? world.pick(gp.x, gp.y) : null;
-        const named = p && (p.type === 'entity' || p.type === 'poi' || p.type === 'tag' || p.type === 'drone' || (p.type === 'boulder' && p.dist < 90));
+        const named = identifiable(p);
         if (p && p.type !== 'sky') lastPick = { p, at: now };
         if (now > focusHoldUntil) hud.focus = named ? p : null;
+        // mixed-reality ID card: appears the moment the eyes land on it, holds 3.5 s after they leave
+        holo.observe(named ? p : null, now);
       }
+      holo.update(now);
       // camera + mic indicators: green only when actually working, dim grey otherwise
       const camOn = gaze.state === 'tracking';
       camInd.dataset.state = camOn ? 'on' : gaze.state === 'denied' || gaze.state === 'error' ? 'err' : '';
